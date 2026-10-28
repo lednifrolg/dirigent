@@ -81,12 +81,12 @@ pub struct Options {
 }
 
 /// One device and what to send it, in order. No changes: it shows what was asked already.
-struct Plan<'a> {
-    device: &'a Device,
-    changes: Vec<Change>,
+pub struct Plan<'a> {
+    pub device: &'a Device,
+    pub changes: Vec<Change>,
 }
 
-fn plan<'a>(
+pub fn plan<'a>(
     home: &'a Home,
     targets: &[Target<'a>],
     wanted: Wanted,
@@ -147,7 +147,7 @@ fn plan<'a>(
 
 /// What to send `device` so it shows `wanted`: nothing if it does already. Dimming, white and
 /// color switch an off light on first.
-fn changes(device: &Device, wanted: Wanted) -> Vec<Change> {
+pub fn changes(device: &Device, wanted: Wanted) -> Vec<Change> {
     let a = &device.attributes;
     let on = a.is_on() == Some(true);
     let lit = |change: Change| {
@@ -403,7 +403,7 @@ async fn settle(hub: &Hub, device: &Device, waiting: &Pending) -> Outcome {
 }
 
 /// "off → on", "brightness 100 → 40 %", "white 2638 → 2700 K", "color 290° 42 % → 30° 80 %".
-fn describe(device: &Device, change: &Change) -> String {
+pub fn describe(device: &Device, change: &Change) -> String {
     let a = &device.attributes;
     match *change {
         Change::Power(on) => {

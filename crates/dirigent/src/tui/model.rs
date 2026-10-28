@@ -1,15 +1,18 @@
 //! The TUI's state, and what each message does to it; [`super::view`] draws it.
 //!
 //! The model does no I/O: it answers messages with [`Effect`]s, which [`super`] runs in the
-//! background and answers with more messages.
+//! background and answers with more messages. [`changes`] has what changes devices.
 
+mod changes;
+
+use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use dirigera::{
-    Backoff, Client, Device, DeviceId, DeviceKind, Event, EventKind, Home, PRESS_WINDOW, Room,
-    RoomId, Scene, SceneId,
+    Backoff, Change, Client, Device, DeviceId, DeviceKind, Event, EventKind, Home, PRESS_WINDOW,
+    Room, RoomId, Scene, SceneId,
 };
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
@@ -18,12 +21,19 @@ use ratatui::crossterm::event::KeyEvent;
 use super::keymap::{self, Action};
 use crate::theme;
 
+pub use changes::{Motion, Pending, Picker, PickerRow, Undo, Wheel, presets};
+
 /// Activity lines kept; the pane shows the newest.
 const ACTIVITY_KEPT: usize = 100;
 /// A state change this soon after a remote's press is taken to come from that remote.
 const PRESS_LINK: SignedDuration = SignedDuration::from_millis(1500);
 /// The same line again within this time is not repeated: the hub reports some things twice.
 const REPEAT: SignedDuration = SignedDuration::from_secs(2);
+/// How long a notice stays in the hint bar.
+const NOTICE_SHOWN: SignedDuration = SignedDuration::from_secs(3);
+/// How long a row lights up after a change from elsewhere, and a state after a switch.
+pub const FLASH: SignedDuration = SignedDuration::from_millis(1200);
+pub const SWITCH_FLASH: SignedDuration = SignedDuration::from_millis(400);
 
 pub enum Msg {
     Key(KeyEvent),
@@ -43,6 +53,32 @@ pub enum Msg {
     Select(Row),
     /// A click on a tab.
     Tab(Tab),
+    /// A click on a device's dot.
+    Toggle(Row),
+    /// The mouse wheel over a bar of the selected light: up or down.
+    Wheel {
+        wheel: Wheel,
+        up: bool,
+    },
+    /// The hub took the changes of a batch, or why not.
+    Sent {
+        batch: u64,
+        result: Result<(), Failure>,
+    },
+    /// A device read back after it did not report a change in time.
+    ReadBack {
+        batch: u64,
+        result: Result<Box<Device>, Failure>,
+    },
+    SceneDone {
+        scene: SceneId,
+        undo: bool,
+        result: Result<(), Failure>,
+    },
+    Identified {
+        device: DeviceId,
+        result: Result<(), Failure>,
+    },
 }
 
 /// A hub that answered.
@@ -91,6 +127,27 @@ pub enum Effect {
     },
     Pair,
     CancelPairing,
+    /// Sends `changes` to `device` in order.
+    Send {
+        client: Client,
+        device: Box<Device>,
+        changes: Vec<Change>,
+        batch: u64,
+    },
+    ReadBack {
+        client: Client,
+        device: DeviceId,
+        batch: u64,
+    },
+    RunScene {
+        client: Client,
+        scene: SceneId,
+        undo: bool,
+    },
+    Identify {
+        client: Client,
+        device: DeviceId,
+    },
 }
 
 /// What can be selected in the list.
@@ -238,11 +295,14 @@ pub enum Tone {
     Warn,
     Bad,
     Press,
+    /// A change from here on its way.
+    Pending,
 }
 
 /// A line of the activity pane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
+    pub id: u64,
     pub at: Timestamp,
     pub tone: Tone,
     pub who: String,
@@ -257,6 +317,16 @@ pub struct Start {
     pub tz: TimeZone,
     /// Lights may be drawn in their own color (no `NO_COLOR`).
     pub colors: bool,
+    /// Flashes, blinking and bars in motion (`animations` in `config.toml`).
+    pub animations: bool,
+}
+
+/// A short message in the hint bar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub text: String,
+    pub tone: Tone,
+    pub until: Timestamp,
 }
 
 pub struct Model {
@@ -276,10 +346,30 @@ pub struct Model {
     /// When each remote was last pressed, as far as the event stream told.
     pub pressed: HashMap<DeviceId, Timestamp>,
     pub quit: bool,
+    pub animations: bool,
+    pub notice: Option<Notice>,
+    /// The color picker, while it is open.
+    pub picker: Option<Picker>,
+    /// Changes from here that have not shown yet.
+    pub pending: Vec<Pending>,
+    /// What `u` takes back, latest last.
+    pub undo: Vec<Undo>,
+    /// Scenes run from here, and until when they can be undone.
+    pub scene_runs: HashMap<SceneId, Timestamp>,
+    /// Devices blinking, until when.
+    pub identifying: HashMap<DeviceId, Timestamp>,
+    /// When a change from elsewhere showed on a device, for a flash of its row.
+    pub flashes: HashMap<DeviceId, Timestamp>,
+    /// When a device was switched from here, for a flash of its state.
+    pub switched: HashMap<DeviceId, Timestamp>,
+    /// Brightness bars running to a new value.
+    pub motions: HashMap<DeviceId, Motion>,
     client: Option<Client>,
     backoff: Backoff,
     /// The latest remote press, to name it as the source of what follows.
     last_press: Option<(String, Timestamp)>,
+    /// For batches and activity lines.
+    next_id: u64,
 }
 
 impl Model {
@@ -299,9 +389,20 @@ impl Model {
             activity: VecDeque::new(),
             pressed: HashMap::new(),
             quit: false,
+            animations: start.animations,
+            notice: None,
+            picker: None,
+            pending: Vec::new(),
+            undo: Vec::new(),
+            scene_runs: HashMap::new(),
+            identifying: HashMap::new(),
+            flashes: HashMap::new(),
+            switched: HashMap::new(),
+            motions: HashMap::new(),
             client: None,
             backoff: Backoff::default(),
             last_press: None,
+            next_id: 0,
         };
         (model, vec![Effect::Connect])
     }
@@ -314,18 +415,37 @@ impl Model {
         ) || (self.phase == Phase::Ready && self.link == Link::Connecting)
     }
 
+    /// Whether the screen changes quickly: changes on their way, a flash, a bar in motion, a
+    /// blinking device.
+    pub fn animating(&self) -> bool {
+        let running =
+            |since: &Timestamp, length: SignedDuration| self.now.duration_since(*since) < length;
+        !self.pending.is_empty()
+            || self.flashes.values().any(|at| running(at, FLASH))
+            || self.switched.values().any(|at| running(at, SWITCH_FLASH))
+            || self.motions.values().any(|motion| motion.running(self.now))
+            || self.identifying.values().any(|until| *until > self.now)
+    }
+
     pub fn update(&mut self, msg: Msg) -> Vec<Effect> {
         match msg {
             Msg::Key(key) => keymap::action(key).map_or_else(Vec::new, |action| self.act(action)),
             Msg::Tick(now) => {
                 self.now = now;
-                match &self.phase {
-                    Phase::Unreachable { retry_at, .. } if now >= *retry_at => {
-                        self.phase = Phase::Starting;
-                        vec![Effect::Connect]
-                    }
-                    _ => vec![],
+                if self
+                    .notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.until <= now)
+                {
+                    self.notice = None;
                 }
+                if let Phase::Unreachable { retry_at, .. } = &self.phase
+                    && now >= *retry_at
+                {
+                    self.phase = Phase::Starting;
+                    return vec![Effect::Connect];
+                }
+                self.tick_changes()
             }
             Msg::Connected(Ok(connected)) => self.connected(connected, "connected"),
             Msg::Connected(Err(failure)) => self.failed(failure),
@@ -381,6 +501,22 @@ impl Model {
                 self.tab = tab;
                 vec![]
             }
+            Msg::Toggle(row) => {
+                if self.overlay != Overlay::None || self.picker.is_some() {
+                    return vec![];
+                }
+                self.selected = Some(row);
+                self.act(Action::Activate)
+            }
+            Msg::Wheel { wheel, up } => self.wheel(wheel, up),
+            Msg::Sent { batch, result } => self.sent(batch, result),
+            Msg::ReadBack { batch, result } => self.read_back(batch, result),
+            Msg::SceneDone {
+                scene,
+                undo,
+                result,
+            } => self.scene_done(&scene, undo, result),
+            Msg::Identified { device, result } => self.identified(&device, result),
         }
     }
 
@@ -388,6 +524,9 @@ impl Model {
         if action == Action::Quit {
             self.quit = true;
             return vec![Effect::CancelPairing];
+        }
+        if self.picker.is_some() {
+            return self.picker_key(action);
         }
         if self.overlay == Overlay::Help {
             if matches!(action, Action::Help | Action::Back) {
@@ -398,7 +537,7 @@ impl Model {
         match &self.phase {
             Phase::Pairing(dialog) => {
                 return match (dialog, action) {
-                    (Dialog::Failed(_), Action::Confirm) => {
+                    (Dialog::Failed(_), Action::Activate) => {
                         self.phase = Phase::Pairing(Dialog::Searching { reason: None });
                         vec![Effect::Pair]
                     }
@@ -410,13 +549,14 @@ impl Model {
                 };
             }
             Phase::Unreachable { .. } => {
-                if matches!(action, Action::Confirm | Action::Resync) {
+                if matches!(action, Action::Activate | Action::Resync) {
                     self.phase = Phase::Starting;
                     return vec![Effect::Connect];
                 }
                 return vec![];
             }
-            Phase::Starting | Phase::Ready => {}
+            Phase::Starting => return vec![],
+            Phase::Ready => {}
         }
         match action {
             Action::Up => self.step(-1),
@@ -438,7 +578,15 @@ impl Model {
                 }
             }
             Action::Help => self.overlay = Overlay::Help,
-            Action::Quit | Action::Confirm | Action::Back => {}
+            Action::Activate => return self.activate(),
+            Action::Brighter { fine } => return self.dim(if fine { 1 } else { 10 }),
+            Action::Dimmer { fine } => return self.dim(if fine { -1 } else { -10 }),
+            Action::Warmer => return self.white_step(-1),
+            Action::Cooler => return self.white_step(1),
+            Action::Color => self.open_picker(),
+            Action::Identify => return self.identify(),
+            Action::Undo => return self.take_back(),
+            Action::Quit | Action::Back => {}
         }
         vec![]
     }
@@ -566,6 +714,9 @@ impl Model {
         let at = event.time.unwrap_or(self.now);
         match &event.kind {
             EventKind::DeviceStateChanged(update) => {
+                let before = home
+                    .device(&update.id)
+                    .and_then(|d| d.attributes.light_level());
                 if !home.apply(update) {
                     // A device this TUI does not know yet: read everything again.
                     return self
@@ -580,6 +731,17 @@ impl Model {
                 };
                 let name = device.name().to_owned();
                 let remote = device.kind() == DeviceKind::Controller;
+                let after = device.attributes.light_level();
+                if self.observe(update, at) {
+                    // An answer to a change from here; its own line tells how it went.
+                    return vec![];
+                }
+                if !remote {
+                    self.flash(&update.id);
+                    if let (Some(from), Some(to)) = (before, after) {
+                        self.run_bar(&update.id, from, to);
+                    }
+                }
                 let what = theme::describe_update(update);
                 if remote {
                     self.pressed.insert(update.id.clone(), at);
@@ -620,18 +782,30 @@ impl Model {
         vec![]
     }
 
-    fn log(&mut self, tone: Tone, who: &str, what: &str, source: Option<String>) {
-        self.log_at(self.now, tone, who, what, source);
+    fn log(&mut self, tone: Tone, who: &str, what: &str, source: Option<String>) -> u64 {
+        self.log_at(self.now, tone, who, what, source)
     }
 
-    fn log_at(&mut self, at: Timestamp, tone: Tone, who: &str, what: &str, source: Option<String>) {
-        let repeated = self.activity.front().is_some_and(|last| {
-            last.who == who && last.what == what && at.duration_since(last.at) < REPEAT
-        });
-        if repeated {
-            return;
+    /// Adds a line to the activity and returns its id; a repeat of the latest line is folded
+    /// into it.
+    fn log_at(
+        &mut self,
+        at: Timestamp,
+        tone: Tone,
+        who: &str,
+        what: &str,
+        source: Option<String>,
+    ) -> u64 {
+        if let Some(last) = self.activity.front()
+            && last.who == who
+            && last.what == what
+            && at.duration_since(last.at) < REPEAT
+        {
+            return last.id;
         }
+        let id = self.next_id();
         self.activity.push_front(Entry {
+            id,
             at,
             tone,
             who: who.to_owned(),
@@ -639,6 +813,41 @@ impl Model {
             source,
         });
         self.activity.truncate(ACTIVITY_KEPT);
+        id
+    }
+
+    fn next_id(&mut self) -> u64 {
+        self.next_id += 1;
+        self.next_id
+    }
+
+    fn entry(&mut self, id: u64) -> Option<&mut Entry> {
+        self.activity.iter_mut().find(|entry| entry.id == id)
+    }
+
+    fn say(&mut self, tone: Tone, text: impl Into<String>) {
+        self.notice = Some(Notice {
+            text: text.into(),
+            tone,
+            until: self.now + NOTICE_SHOWN,
+        });
+    }
+
+    /// The device as the screen shows it: with the changes from here that are on their way.
+    pub fn shown<'a>(&self, device: &'a Device) -> Cow<'a, Device> {
+        let mut pending = self
+            .pending
+            .iter()
+            .filter(|p| p.device == device.id)
+            .peekable();
+        if pending.peek().is_none() {
+            return Cow::Borrowed(device);
+        }
+        let mut shown = device.clone();
+        for change in pending {
+            shown.attributes.apply(&changes::shows(&change.wanted));
+        }
+        Cow::Owned(shown)
     }
 
     pub fn device(&self, id: &DeviceId) -> Option<&Device> {
@@ -683,6 +892,7 @@ pub mod tests {
             now: now(),
             tz: TimeZone::UTC,
             colors: true,
+            animations: true,
         }
     }
 

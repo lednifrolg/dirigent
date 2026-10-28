@@ -24,6 +24,7 @@ use ratatui::layout::Position;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::task::JoinHandle;
 
+use crate::config;
 use crate::connect::Hub;
 use crate::error::AppError;
 use crate::output;
@@ -34,8 +35,11 @@ use view::{Hotspot, Target};
 
 /// How often the clock and the countdowns are updated.
 const TICK: Duration = Duration::from_secs(1);
-/// Redraw interval while a spinner runs.
-const FRAME: Duration = Duration::from_millis(80);
+/// Redraw interval while a spinner runs, and while something moves or a change waits to go out.
+const SPINNER: Duration = Duration::from_millis(80);
+const FRAME: Duration = Duration::from_millis(40);
+/// How long `i` makes a device blink.
+const IDENTIFY: Duration = Duration::from_secs(5);
 
 /// What reaches the event loop: messages for the model, and mouse events still to be placed.
 enum Incoming {
@@ -49,11 +53,13 @@ pub async fn run(paths: Paths) -> Result<(), AppError> {
             "`dirigent` without a command opens the TUI, which needs a terminal; see `dirigent --help`".into(),
         ));
     }
+    let config = config::load(&paths)?;
     let (mut model, effects) = Model::start(Start {
         now: Timestamp::now(),
         tz: TimeZone::system(),
         // https://no-color.org: set and not empty.
         colors: std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty()),
+        animations: config.animations(),
     });
     let mut terminal = ratatui::init();
     let result = match execute!(io::stdout(), EnableMouseCapture) {
@@ -106,7 +112,13 @@ async fn event_loop(
         terminal
             .draw(|frame| hotspots = view::render(model, frame))
             .map_err(|e| AppError::io("terminal", e))?;
-        let wait = if model.spinning() { FRAME } else { TICK };
+        let wait = if model.animating() {
+            FRAME
+        } else if model.spinning() {
+            SPINNER
+        } else {
+            TICK
+        };
         let first = tokio::select! {
             Some(incoming) = rx.recv() => incoming,
             () = tokio::time::sleep(wait) => Incoming::Msg(Box::new(Msg::Tick(Timestamp::now()))),
@@ -135,20 +147,25 @@ async fn event_loop(
     Ok(())
 }
 
-/// The message a click stands for, by what is under the pointer.
+/// The message a click or the wheel stands for, by what is under the pointer.
 fn place(event: MouseEvent, hotspots: &[Hotspot]) -> Option<Msg> {
-    if event.kind != MouseEventKind::Down(MouseButton::Left) {
-        return None;
-    }
     let pointer = Position::new(event.column, event.row);
     let spot = hotspots
         .iter()
         .rev()
         .find(|spot| spot.area.contains(pointer))?;
-    Some(match &spot.target {
-        Target::Row(row) => Msg::Select(row.clone()),
-        Target::Tab(tab) => Msg::Tab(*tab),
-    })
+    let up = match event.kind {
+        MouseEventKind::ScrollUp => Some(true),
+        MouseEventKind::ScrollDown => Some(false),
+        _ => None,
+    };
+    match (&spot.target, up) {
+        (Target::Wheel(wheel), Some(up)) => Some(Msg::Wheel { wheel: *wheel, up }),
+        (_, Some(_)) | (Target::Wheel(_), None) => None,
+        (Target::Row(row), None) => Some(Msg::Select(row.clone())),
+        (Target::Toggle(row), None) => Some(Msg::Toggle(row.clone())),
+        (Target::Tab(tab), None) => Some(Msg::Tab(*tab)),
+    }
 }
 
 /// Reads terminal events on their own thread, since reading blocks.
@@ -161,8 +178,14 @@ fn read_input(tx: UnboundedSender<Incoming>) {
                 }
                 // A tick redraws at the new size.
                 Ok(Event::Resize(..)) => Incoming::Msg(Box::new(Msg::Tick(Timestamp::now()))),
+                // Moves and drags would only cost redraws.
                 Ok(Event::Mouse(mouse))
-                    if mouse.kind == MouseEventKind::Down(MouseButton::Left) =>
+                    if matches!(
+                        mouse.kind,
+                        MouseEventKind::Down(MouseButton::Left)
+                            | MouseEventKind::ScrollUp
+                            | MouseEventKind::ScrollDown
+                    ) =>
                 {
                     Incoming::Mouse(mouse)
                 }
@@ -224,7 +247,80 @@ fn spawn(paths: &Paths, tx: &UnboundedSender<Incoming>, tasks: &mut Tasks, effec
                 task.abort();
             }
         }
+        Effect::Send {
+            client,
+            device,
+            changes,
+            batch,
+        } => {
+            tokio::spawn(async move {
+                let result = send(&client, &device, &changes).await;
+                report(Msg::Sent { batch, result });
+            });
+        }
+        Effect::ReadBack {
+            client,
+            device,
+            batch,
+        } => {
+            tokio::spawn(async move {
+                let result = client
+                    .device(&device)
+                    .await
+                    .map(Box::new)
+                    .map_err(|e| failure(&e.into()));
+                report(Msg::ReadBack { batch, result });
+            });
+        }
+        Effect::RunScene {
+            client,
+            scene,
+            undo,
+        } => {
+            tokio::spawn(async move {
+                let result = run_scene(&client, &scene, undo).await;
+                report(Msg::SceneDone {
+                    scene,
+                    undo,
+                    result,
+                });
+            });
+        }
+        Effect::Identify { client, device } => {
+            tokio::spawn(async move {
+                let result = client
+                    .identify(&device, IDENTIFY)
+                    .await
+                    .map_err(|e| failure(&e.into()));
+                report(Msg::Identified { device, result });
+            });
+        }
     }
+}
+
+/// Sends `changes` to `device` in order: some attributes cannot go in one request, and on
+/// comes first.
+async fn send(
+    client: &Client,
+    device: &dirigera::Device,
+    changes: &[dirigera::Change],
+) -> Result<(), Failure> {
+    for change in changes {
+        client
+            .apply(device, change)
+            .await
+            .map_err(|e| failure(&e.into()))?;
+    }
+    Ok(())
+}
+
+async fn run_scene(client: &Client, scene: &dirigera::SceneId, undo: bool) -> Result<(), Failure> {
+    let result = if undo {
+        client.undo_scene(scene).await
+    } else {
+        client.trigger_scene(scene).await
+    };
+    result.map_err(|e| failure(&e.into()))
 }
 
 fn connected(hub: Hub) -> Connected {

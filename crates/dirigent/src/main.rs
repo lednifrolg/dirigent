@@ -1,6 +1,7 @@
 //! `dirigent`: terminal client for the IKEA DIRIGERA smart home hub over its local API.
 
 mod commands;
+mod config;
 mod connect;
 mod control;
 mod error;
