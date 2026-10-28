@@ -15,6 +15,7 @@ dirigera.workspace = true
 futures-util.workspace = true
 gethostname.workspace = true
 jiff.workspace = true
+ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
@@ -24,6 +25,7 @@ unicode-normalization.workspace = true
 
 [dev-dependencies]
 futures-util.workspace = true
+insta.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util", "process", "rt-multi-thread", "sync"] }

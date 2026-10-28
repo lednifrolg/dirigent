@@ -7,8 +7,11 @@ mod error;
 mod files;
 mod names;
 mod output;
+mod pairing;
 mod paths;
 mod store;
+mod theme;
+mod tui;
 mod wanted;
 
 use std::process::ExitCode;
@@ -28,13 +31,19 @@ use crate::wanted::{Color, Level, White};
     version,
     propagate_version = true,
     about,
-    arg_required_else_help = true
+    after_help = "Without a command, dirigent opens the interactive TUI."
 )]
 struct Cli {
     /// Print JSON instead of text.
     #[arg(long, global = true)]
     json: bool,
     #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// A command with the global options.
+struct Invocation {
+    json: bool,
     command: Command,
 }
 
@@ -213,6 +222,13 @@ fn wanted(command: &Command) -> Option<(Vec<String>, Only, Wanted, Options)> {
 
 async fn run(cli: Cli) -> Result<(), AppError> {
     let paths = Paths::discover()?;
+    let Some(command) = cli.command else {
+        return tui::run(paths).await;
+    };
+    let cli = Invocation {
+        json: cli.json,
+        command,
+    };
     match &cli.command {
         Command::Pair { address, name } => {
             return commands::pair(&paths, address.as_deref(), name.clone()).await;

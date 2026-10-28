@@ -8,11 +8,11 @@ use std::io::Write;
 
 use anstream::{eprintln, println};
 use anstyle::{AnsiColor, RgbColor, Style};
-use dirigera::{ColorMode, Device, DeviceKind, Home, Room};
-use jiff::Timestamp;
+use dirigera::{Device, DeviceKind, Home, Room};
 use serde::Serialize;
 
 use crate::error::AppError;
+use crate::theme;
 
 pub const DIM: Style = Style::new().dimmed();
 pub const BOLD: Style = Style::new().bold();
@@ -20,8 +20,12 @@ pub const GREEN: Style = AnsiColor::Green.on_default();
 pub const YELLOW: Style = AnsiColor::Yellow.on_default();
 pub const RED: Style = AnsiColor::Red.on_default();
 const BLUE: Style = AnsiColor::Blue.on_default();
-/// Remotes below this battery level get a warning.
-pub const LOW_BATTERY: u8 = 10;
+pub use crate::theme::LOW_BATTERY;
+
+/// The color a light shows, for the terminal.
+pub fn light_color(device: &Device) -> Option<RgbColor> {
+    theme::light(device).map(|theme::Rgb(r, g, b)| RgbColor(r, g, b))
+}
 
 pub fn paint(style: Style, text: impl Display) -> String {
     format!("{style}{text}{style:#}")
@@ -83,69 +87,6 @@ pub fn line(text: impl Display) {
 pub fn json(value: &impl Serialize) -> Result<(), AppError> {
     let text = serde_json::to_string_pretty(value).expect("dirigent's views always serialize");
     writeln!(std::io::stdout().lock(), "{text}").map_err(|e| AppError::io("standard output", e))
-}
-
-/// The color a light shows, in true color: its hue and saturation, or its white.
-pub fn light_color(device: &Device) -> Option<RgbColor> {
-    let a = &device.attributes;
-    match a.color_mode() {
-        Some(ColorMode::Color) => {
-            let hue = a.color_hue()?;
-            let saturation = a.color_saturation()?;
-            Some(hsv(hue, saturation))
-        }
-        _ => a.color_temperature().map(kelvin),
-    }
-}
-
-/// An RGB color for a hue and saturation at full value.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "channels are clamped to 0-255 first"
-)]
-fn hsv(hue: f64, saturation: f64) -> RgbColor {
-    let sector = hue.rem_euclid(360.0) / 60.0;
-    let saturation = saturation.clamp(0.0, 1.0);
-    let rising = 1.0 - (sector.rem_euclid(2.0) - 1.0).abs();
-    let (red, green, blue) = match sector {
-        sector if sector < 1.0 => (1.0, rising, 0.0),
-        sector if sector < 2.0 => (rising, 1.0, 0.0),
-        sector if sector < 3.0 => (0.0, 1.0, rising),
-        sector if sector < 4.0 => (0.0, rising, 1.0),
-        sector if sector < 5.0 => (rising, 0.0, 1.0),
-        _ => (1.0, 0.0, rising),
-    };
-    let channel = |share: f64| {
-        ((1.0 - saturation + saturation * share) * 255.0)
-            .round()
-            .clamp(0.0, 255.0) as u8
-    };
-    RgbColor(channel(red), channel(green), channel(blue))
-}
-
-/// Roughly how a white looks: amber at 2200 K, cool blue at 4000 K and above.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "channels are clamped to 0-255 first"
-)]
-fn kelvin(kelvin: u32) -> RgbColor {
-    let t = ((f64::from(kelvin) - 2200.0) / 1800.0).clamp(0.0, 1.0);
-    let mix = |warm: f64, cool: f64| (warm + (cool - warm) * t).round().clamp(0.0, 255.0) as u8;
-    RgbColor(mix(255.0, 222.0), mix(176.0, 232.0), mix(102.0, 255.0))
-}
-
-/// "just now", "42 s ago", "5 min ago", "3 h ago", "2 d ago".
-pub fn ago(at: Timestamp, now: Timestamp) -> String {
-    let seconds = now.duration_since(at).as_secs().max(0);
-    match seconds {
-        0..10 => "just now".to_owned(),
-        10..60 => format!("{seconds} s ago"),
-        60..3600 => format!("{} min ago", seconds / 60),
-        3600..86_400 => format!("{} h ago", seconds / 3600),
-        _ => format!("{} d ago", seconds / 86_400),
-    }
 }
 
 /// How a device is listed: a dot for on or off, and what it shows.
@@ -223,27 +164,6 @@ pub fn pad(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn hues_and_whites_become_colors() {
-        assert_eq!(hsv(0.0, 1.0), RgbColor(255, 0, 0));
-        assert_eq!(hsv(120.0, 1.0), RgbColor(0, 255, 0));
-        assert_eq!(hsv(240.0, 0.5), RgbColor(128, 128, 255));
-        assert_eq!(hsv(30.0, 0.0), RgbColor(255, 255, 255));
-        assert_eq!(kelvin(2200), RgbColor(255, 176, 102));
-        assert_eq!(kelvin(6500), RgbColor(222, 232, 255));
-    }
-
-    #[test]
-    fn times_read_as_ago() {
-        let now: Timestamp = "2026-01-01T12:00:00Z".parse().unwrap();
-        let at = |seconds: i64| now - jiff::SignedDuration::from_secs(seconds);
-        assert_eq!(ago(at(3), now), "just now");
-        assert_eq!(ago(at(42), now), "42 s ago");
-        assert_eq!(ago(at(300), now), "5 min ago");
-        assert_eq!(ago(at(3 * 3600), now), "3 h ago");
-        assert_eq!(ago(at(2 * 86_400), now), "2 d ago");
-    }
 
     #[test]
     fn padding_counts_characters() {

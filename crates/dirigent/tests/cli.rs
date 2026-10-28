@@ -61,6 +61,18 @@ async fn pairing_waits_for_the_button_and_keeps_the_token_private() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_tui_needs_a_terminal() {
+    let dirigent = Dirigent::paired().await;
+    let output = dirigent.run(&[]).await;
+    assert_eq!(code(&output), 2, "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("opens the TUI, which needs a terminal"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn commands_need_a_pairing() {
     let dirigent = Dirigent::new().await;
     let output = dirigent.run(&["list"]).await;

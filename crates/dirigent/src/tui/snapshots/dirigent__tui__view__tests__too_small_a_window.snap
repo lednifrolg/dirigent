@@ -1,0 +1,16 @@
+---
+source: crates/dirigent/src/tui/view.rs
+expression: "screen(&lived_in(), 40, 12)"
+---
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"            window too small            "
+"             46 × 16 needed             "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"                                        "

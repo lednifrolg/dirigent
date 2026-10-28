@@ -8,10 +8,15 @@ switches real devices in a real home.
 
 ## Status
 
-Early development: the one-shot commands work; the interactive TUI comes next. Verified live on
-hub firmware 2.975.3.
+Early development: the one-shot commands work, and the TUI shows the home live; changing devices
+from the TUI comes next. Verified live on hub firmware 2.975.3.
 
 ## Usage
+
+`dirigent` without a command opens the interactive TUI: rooms with their devices, scenes and
+remotes on the left, the selected one in detail, and every change in the home as it happens, also
+from remotes and other apps. It pairs with the hub on its first start. Changing devices from the
+TUI comes next; for now that is what the commands are for:
 
 ```sh
 dirigent pair                 # finds the hub; press its action button when asked
