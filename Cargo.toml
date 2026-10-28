@@ -10,8 +10,28 @@ repository = "https://github.com/lednifrolg/dirigent"
 publish = false
 
 [workspace.dependencies]
+dirigera = { path = "crates/dirigera" }
+
+base64 = "0.23"
 clap = { version = "4.6", features = ["derive"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+getrandom = "0.4"
+jiff = { version = "0.2", features = ["serde"] }
+mdns-sd = "0.21"
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
+# `charset` is left out: responses are read as bytes and parsed as UTF-8 JSON. No system proxy:
+# the hub is on the local network.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "form", "query"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.11"
+thiserror = "2.0"
+tokio = { version = "1.54", features = ["macros", "net", "rt", "time"] }
+tokio-rustls = { version = "0.26", default-features = false }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+url = "2.5"
+wiremock = "0.6"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

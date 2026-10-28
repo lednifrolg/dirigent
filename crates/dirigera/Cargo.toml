@@ -7,8 +7,34 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
-[dev-dependencies]
+[dependencies]
+base64.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+jiff.workspace = true
+mdns-sd.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tokio-tungstenite.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+futures-util.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["io-util", "rt-multi-thread", "sync"] }
+tokio-rustls.workspace = true
+tokio-tungstenite.workspace = true
+url.workspace = true
+wiremock.workspace = true
 
 [lints]
 workspace = true

@@ -8,9 +8,9 @@ switches real devices in a real home.
 
 ## Status
 
-Early development: the workspace and CI are set up, the `dirigent` CLI does not do anything yet.
-The local API has been verified live for pairing, reading the home state and switching a light,
-on hub firmware 2.975.3.
+Early development: the `dirigera` crate pairs with the hub, finds it on the network, reads the
+home, changes lights and outlets, runs scenes and follows the event stream; the `dirigent` CLI
+does not do anything yet. All of it has been verified live on hub firmware 2.975.3.
 
 ## Pairing
 
@@ -33,8 +33,11 @@ the fingerprint of the hub's certificate. Nothing leaves your home network.
 | `crates/dirigera` | DIRIGERA local API client, no UI dependencies |
 | `crates/dirigent` | the `dirigent` binary: CLI and TUI |
 
-Test data in `crates/dirigera/tests/data` is synthetic. Never commit captured hub responses,
-tokens or real device identifiers. Code, docs and commit messages are in English.
+Test data in `crates/dirigera/tests/data` is synthetic, and tests run against mock hubs. Never
+commit captured hub responses, tokens or real device identifiers. Code, docs and commit messages
+are in English.
+
+`cargo run -p dirigera --example probe` runs single requests against a real hub, for live checks.
 
 The checks CI runs:
 
