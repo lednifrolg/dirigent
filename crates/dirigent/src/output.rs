@@ -23,7 +23,13 @@ const BLUE: Style = AnsiColor::Blue.on_default();
 pub use crate::theme::LOW_BATTERY;
 
 /// The color a light shows, for the terminal.
+///
+/// `None` when standard output shows no colors: a pipe, a file, or `NO_COLOR`; a swatch without
+/// its color says nothing.
 pub fn light_color(device: &Device) -> Option<RgbColor> {
+    if anstream::AutoStream::choice(&std::io::stdout()) == anstream::ColorChoice::Never {
+        return None;
+    }
     theme::light(device).map(|theme::Rgb(r, g, b)| RgbColor(r, g, b))
 }
 
@@ -80,6 +86,14 @@ pub fn success(text: impl Display) {
 
 pub fn line(text: impl Display) {
     println!("{text}");
+}
+
+/// Writes `bytes` to standard output as they are, such as a completion script.
+pub fn raw(bytes: &[u8]) -> Result<(), AppError> {
+    std::io::stdout()
+        .lock()
+        .write_all(bytes)
+        .map_err(|e| AppError::io("standard output", e))
 }
 
 /// Prints `value` as JSON. A reader that went away, like `head`, is an error rather than a

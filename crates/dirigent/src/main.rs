@@ -15,9 +15,11 @@ mod theme;
 mod tui;
 mod wanted;
 
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 
 use crate::connect::Hub;
 use crate::control::{Options, Wanted};
@@ -177,6 +179,38 @@ enum Command {
     },
     /// Print what changes in the home as it happens, until stopped.
     Watch,
+    /// Print a shell completion script.
+    ///
+    /// For example: dirigent completions bash > ~/.local/share/bash-completion/completions/dirigent
+    Completions { shell: Shell },
+    /// Write the man pages for dirigent and each of its commands into a directory.
+    ///
+    /// For example: dirigent man ~/.local/share/man/man1
+    Man {
+        /// Directory for the pages; created when missing.
+        dir: PathBuf,
+    },
+}
+
+/// Writes a man page for `command` and for each of its commands into `dir`, every one with
+/// dirigent's name and version in its footer.
+fn man_pages(command: clap::Command, dir: &Path) -> std::io::Result<()> {
+    fn write(command: clap::Command, dir: &Path, source: &str) -> std::io::Result<()> {
+        for sub in command.get_subcommands().filter(|s| !s.is_hide_set()) {
+            write(sub.clone(), dir, source)?;
+        }
+        clap_mangen::Man::new(command)
+            .source(source.to_owned())
+            .generate_to(dir)
+            .map(drop)
+    }
+    let mut command = command.disable_help_subcommand(true);
+    command.build();
+    write(
+        command,
+        dir,
+        &format!("dirigent {}", env!("CARGO_PKG_VERSION")),
+    )
 }
 
 /// The names and what to do with them, for commands that change devices.
@@ -222,6 +256,31 @@ fn wanted(command: &Command) -> Option<(Vec<String>, Only, Wanted, Options)> {
 }
 
 async fn run(cli: Cli) -> Result<(), AppError> {
+    // These need no hub and no files, so they work before anything is set up.
+    match &cli.command {
+        Some(Command::Completions { shell }) => {
+            let mut script = Vec::new();
+            clap_complete::generate(*shell, &mut Cli::command(), "dirigent", &mut script);
+            return output::raw(&script);
+        }
+        Some(Command::Man { dir }) => {
+            if dir.exists() && !dir.is_dir() {
+                return Err(AppError::Usage(format!(
+                    "{} is not a directory",
+                    dir.display()
+                )));
+            }
+            std::fs::create_dir_all(dir)
+                .and_then(|()| man_pages(Cli::command(), dir))
+                .map_err(|e| AppError::io(dir, e))?;
+            output::success(format_args!(
+                "man pages written to {0}; read one with `man -l {0}/dirigent.1`",
+                dir.display()
+            ));
+            return Ok(());
+        }
+        _ => {}
+    }
     let paths = Paths::discover()?;
     let Some(command) = cli.command else {
         return tui::run(paths).await;

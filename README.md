@@ -1,32 +1,37 @@
 # dirigent
 
-Terminal client for the IKEA DIRIGERA smart home hub over its local API: an interactive TUI and
-one-shot commands for the shell.
+`dirigent` is a terminal client for the IKEA DIRIGERA smart home hub over its local API: an
+interactive TUI and one-shot commands for the shell, on Linux and macOS. Verified live on hub
+firmware 2.975.3.
 
 Unofficial project, not affiliated with IKEA. It talks to the hub's undocumented local API and
 switches real devices in a real home.
 
-## Status
+![The shell with dirigent list and dirigent dim, then the TUI switching and dimming a light, picking a color for an LED strip, running a scene and taking it back, and its help](assets/demo.gif)
 
-Early development: the one-shot commands and the TUI work. Verified live on hub firmware 2.975.3.
+## Install
+
+From source, with a recent Rust:
+
+```sh
+cargo install --git https://github.com/lednifrolg/dirigent --locked dirigent
+```
+
+or from a clone, `cargo install --path crates/dirigent --locked`. Shell completions and man
+pages come from the binary:
+
+```sh
+dirigent completions bash > ~/.local/share/bash-completion/completions/dirigent
+dirigent completions zsh > ~/.zfunc/_dirigent      # a directory on your $fpath
+dirigent completions fish > ~/.config/fish/completions/dirigent.fish
+dirigent man ~/.local/share/man/man1
+```
 
 ## Usage
 
-`dirigent` without a command opens the interactive TUI: rooms with their devices, scenes and
-remotes on the left, the selected one in detail, and every change in the home as it happens, also
-from remotes and other apps. It pairs with the hub on its first start.
-
-In the TUI, `↑`/`↓` select, `␣` switches a device or a whole room and runs a scene, `←`/`→` dim
-(with Shift by 1 %), `[`/`]` make white warmer or cooler, `c` opens a color picker with presets
-and any hue and saturation, `i` makes a device blink, and `u` takes back the latest change. A
-change shows at once and goes out right away; the activity pane says when the device reports it.
-The mouse selects rows, switches a device by its dot, and turns a light's bars with the wheel. `?`
-lists every key.
-
-The same, one command at a time:
-
 ```sh
 dirigent pair                 # finds the hub; press its action button when asked
+dirigent                      # the interactive TUI
 dirigent list                 # rooms with their devices, scenes and remotes (--json for scripts)
 dirigent status "led strip"   # one device, room or scene
 
@@ -42,6 +47,27 @@ dirigent watch                # every change as it happens, from remotes and app
 Names match regardless of case and diacritics, and part of a name is enough when it is
 unambiguous; `--room` or `--device` settles a name that is both. A command waits until the
 device reports the change, at most 5 s; `--no-wait` returns once the hub took it.
+`dirigent <command> --help` has the details.
+
+The TUI shows rooms with their devices, scenes and remotes on the left, the selected one in
+detail, and every change in the home as it happens, also from remotes, scenes and other apps.
+It pairs with the hub on its first start.
+
+| Key | Does |
+|---|---|
+| `↑` `↓` | select a room, device, scene or remote |
+| `␣` `⏎` | switch on or off, a whole room at once; run a scene |
+| `←` `→` | brightness ±10 %, with Shift ±1 % |
+| `[` `]` | warmer or cooler white |
+| `c` | a color picker: presets, any hue and saturation, or white |
+| `i` | make the device blink for 5 s |
+| `u` | take back the latest change, or a scene while the hub allows |
+| `R` | read everything from the hub again |
+| `?` | every key |
+
+A change shows at once and goes out right away; the activity pane says when the device reports
+it. The mouse selects rows, switches a device by its dot, and turns a light's bars with the
+wheel. In a narrow window, `Tab` switches between the devices and the activity.
 
 ## Pairing
 
@@ -49,7 +75,8 @@ device reports the change, at most 5 s; `--no-wait` returns once the hub took it
 bottom of the hub. The token the hub issues is kept in `~/.local/state/dirigent/hub.json`,
 readable only by you, together with the fingerprint of the hub's certificate: later connections
 accept only that certificate. When the hub's address changes, dirigent finds it again by its
-identity. Nothing leaves your home network. `DIRIGENT_HOME` puts the file in another directory.
+identity. Nothing leaves your home network. `dirigent unpair` removes dirigent from the hub's
+users again.
 
 ## Configuration
 
@@ -58,6 +85,8 @@ identity. Nothing leaves your home network. `DIRIGENT_HOME` puts the file in ano
 ```toml
 animations = false   # no flashing rows, blinking dots or bars in motion in the TUI
 ```
+
+`DIRIGENT_HOME` puts config and state in one directory.
 
 ## Exit codes
 
@@ -79,19 +108,26 @@ animations = false   # no flashing rows, blinking dots or bars in motion in the 
 
 ## Development
 
-| Crate | Purpose |
-|---|---|
-| `crates/dirigera` | DIRIGERA local API client, no UI dependencies |
-| `crates/dirigent` | the `dirigent` binary: CLI and TUI |
+`crates/dirigera` is the DIRIGERA local API client, without UI dependencies; `crates/dirigent`
+the CLI and TUI. Test data in `crates/dirigera/tests/data` is synthetic, and tests run against
+mock hubs: the CLI tests run the binary against a fake hub that `DIRIGENT_HUB_URL` points at.
+Never commit captured hub responses, tokens or real device identifiers. Code, docs and commit
+messages are in English.
 
-Test data in `crates/dirigera/tests/data` is synthetic, and tests run against mock hubs: the
-CLI tests run the binary against a fake hub with `DIRIGENT_HUB_URL` pointing at it. Never
-commit captured hub responses, tokens or real device identifiers. Code, docs and commit messages
-are in English.
+`cargo run -p dirigera --example probe` runs single requests against a real hub, for live
+checks. The same fake hub with a small home serves demos and screenshots, and
+[`assets/demo.tape`](assets/demo.tape) records the GIF above with
+[vhs](https://github.com/charmbracelet/vhs):
 
-`cargo run -p dirigera --example probe` runs single requests against a real hub, for live checks.
+```sh
+export DIRIGENT_HOME=$(mktemp -d) DIRIGENT_HUB_URL=http://127.0.0.1:18892
+cargo run -p dirigent --example demo_hub -- 18892 "$DIRIGENT_HOME" &
+cargo run -p dirigent
 
-The checks CI runs:
+cargo build -p dirigent --bin dirigent --examples && vhs assets/demo.tape
+```
+
+CI runs:
 
 ```sh
 cargo fmt --all --check

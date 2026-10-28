@@ -39,6 +39,8 @@ const DETAIL_HEIGHT: u16 = 12;
 /// Width of the labels in the detail pane, and of the values after a bar.
 const LABEL: usize = 12;
 const VALUE: usize = 8;
+/// The narrowest name column of the activity.
+const NAME: usize = 14;
 
 /// What the mouse can point at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1048,14 +1050,22 @@ fn compact_detail(model: &Model, width: usize) -> Vec<Line<'static>> {
 }
 
 fn activity(model: &Model, width: usize) -> Vec<Line<'static>> {
+    // As wide as the longest name, up to a quarter of the pane.
+    let names = model
+        .activity
+        .iter()
+        .map(|entry| entry.who.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(NAME, (width / 4).max(NAME));
     model
         .activity
         .iter()
-        .map(|entry| activity_line(model, entry, width))
+        .map(|entry| activity_line(model, entry, names, width))
         .collect()
 }
 
-fn activity_line(model: &Model, entry: &Entry, width: usize) -> Line<'static> {
+fn activity_line(model: &Model, entry: &Entry, names: usize, width: usize) -> Line<'static> {
     let time = entry
         .at
         .to_zoned(model.tz.clone())
@@ -1074,15 +1084,15 @@ fn activity_line(model: &Model, entry: &Entry, width: usize) -> Line<'static> {
         .clone()
         .map(|source| vec![Span::styled(source, DIM)])
         .unwrap_or_default();
-    // Time, icon and name take 27 columns; the text gets what the source leaves.
+    // Time, icon and name take 13 columns and the names; the text gets what the source leaves.
     let source: usize = right.iter().map(Span::width).sum();
-    let room = width.saturating_sub(27 + source + usize::from(source > 0));
+    let room = width.saturating_sub(13 + names + source + usize::from(source > 0));
     let left = vec![
         Span::styled(time, DIM),
         Span::raw("  "),
         Span::styled(icon, Style::new().fg(color)),
         Span::raw(" "),
-        Span::raw(format!("{} ", fit(&entry.who, 14))),
+        Span::raw(format!("{} ", fit(&entry.who, names))),
         Span::raw(fit(&entry.what, room).trim_end().to_owned()),
     ];
     spread(left, right, width)
@@ -1281,7 +1291,7 @@ fn hint_bar(model: &Model, frame: &mut Frame, area: Rect, shape: Shape) {
     let (allows, activate) = allowed(model);
     // (rank, keys, label); a lower rank stays longer when the window is narrow.
     let hints: Vec<(u8, &str, &str)> = match (&model.overlay, &model.phase) {
-        (Overlay::Help, _) => vec![(0, "?", "close"), (0, "Esc", "close")],
+        (Overlay::Help, _) => vec![(0, "Esc", "close"), (0, "q", "quit")],
         _ if model.picker.is_some() => vec![
             (0, "↑↓", "row"),
             (0, "←→", "change"),
@@ -1649,6 +1659,27 @@ mod tests {
         });
         model.update(Msg::Tick(model.now + jiff::SignedDuration::from_secs(4)));
         insta::assert_snapshot!(screen(&model, 110, 26));
+    }
+
+    #[test]
+    fn long_names_widen_the_activity_up_to_a_quarter_of_it() {
+        let mut model = lived_in();
+        model.update(event(&json!({
+            "type": "sceneUpdated",
+            "data": {
+                "id": "a1b2c3d4-0000-4000-8000-0000000000b1",
+                "info": { "name": "Late evening" },
+            },
+        })));
+        let lines = |width| {
+            screen(&model, width, 26)
+                .lines()
+                .filter(|line| line.contains("updated"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        assert!(lines(130)[0].contains("scene Late evening updated"));
+        assert!(lines(110)[0].contains("scene Late eve… updated"));
     }
 
     #[test]
