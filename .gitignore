@@ -1,0 +1,14 @@
+# Local-only material, never committed
+/research/
+/out/
+/.lavish/
+/AGENTS.md
+/.cargo/config.toml
+
+# Secrets and local data
+hub.json
+.env
+.env.*
+
+# Build output
+/target/
