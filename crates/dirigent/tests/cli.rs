@@ -368,10 +368,15 @@ async fn watch_prints_changes_as_they_come() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    // As the hub sends them: reachable every time, and now and then only when last seen.
+    dirigent.hub.broadcast(&json!({
+        "type": "deviceStateChanged",
+        "data": { "id": STRIP, "isReachable": true, "lastSeen": "2026-01-01T11:59:00.000Z" },
+    }));
     dirigent.hub.broadcast(&json!({
         "type": "deviceStateChanged",
         "time": "2026-01-01T12:00:00.000Z",
-        "data": { "id": STRIP, "attributes": { "isOn": false } },
+        "data": { "id": STRIP, "attributes": { "isOn": false }, "isReachable": true },
     }));
     dirigent.hub.broadcast(&json!({
         "type": "remotePressEvent",

@@ -717,9 +717,10 @@ impl Model {
         let at = event.time.unwrap_or(self.now);
         match &event.kind {
             EventKind::DeviceStateChanged(update) => {
-                let before = home
+                let (before, was_reachable) = home
                     .device(&update.id)
-                    .and_then(|d| d.attributes.light_level());
+                    .map(|d| (d.attributes.light_level(), d.is_reachable))
+                    .unwrap_or_default();
                 if !home.apply(update) {
                     // A device this TUI does not know yet: read everything again.
                     return self.resync();
@@ -734,19 +735,19 @@ impl Model {
                     // An answer to a change from here; its own line tells how it went.
                     return vec![];
                 }
+                if remote {
+                    self.pressed.insert(update.id.clone(), at);
+                    self.last_press = Some((update.id.clone(), self.now));
+                }
+                let what = theme::describe_update(update, was_reachable);
+                if what.is_empty() {
+                    return vec![];
+                }
                 if !remote {
                     self.flash(&update.id);
                     if let (Some(from), Some(to)) = (before, after) {
                         self.run_bar(&update.id, from, to);
                     }
-                }
-                let what = theme::describe_update(update);
-                if remote {
-                    self.pressed.insert(update.id.clone(), at);
-                    self.last_press = Some((update.id.clone(), self.now));
-                }
-                if what.is_empty() {
-                    return vec![];
                 }
                 let source = (!remote).then(|| self.cause(&update.id));
                 self.log_at(at, Tone::Info, &name, &what, source);
@@ -1078,7 +1079,7 @@ pub mod tests {
         model.update(event(&json!({
             "type": "deviceStateChanged",
             "time": "2026-01-01T12:00:05.000Z",
-            "data": { "id": STRIP, "attributes": { "lightLevel": 40 } },
+            "data": { "id": STRIP, "attributes": { "lightLevel": 40 }, "isReachable": true },
         })));
         assert_eq!(
             model
@@ -1094,6 +1095,15 @@ pub mod tests {
             ("Shelf strip", "brightness 40 %")
         );
         assert_eq!(latest.source.as_deref(), Some("elsewhere"));
+        // Only when it was last seen: nothing to tell, nothing flashes.
+        let lines = model.activity.len();
+        model.flashes.clear();
+        model.update(event(&json!({
+            "type": "deviceStateChanged",
+            "data": { "id": STRIP, "isReachable": true, "lastSeen": "2026-01-01T12:00:09.000Z" },
+        })));
+        assert_eq!(model.activity.len(), lines);
+        assert!(model.flashes.is_empty());
     }
 
     #[test]

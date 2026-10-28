@@ -402,7 +402,8 @@ async fn settle(hub: &Hub, device: &Device, waiting: &Pending) -> Outcome {
     }
 }
 
-/// "off → on", "brightness 100 → 40 %", "white 2638 → 2700 K", "color 290° 42 % → 30° 80 %".
+/// "off → on", "brightness 100 → 40 %", "white 2638 → 2700 K", "color 290° 42 % → 30° 80 %",
+/// "color 290° 42 % → white 2700 K".
 pub fn describe(device: &Device, change: &Change) -> String {
     let a = &device.attributes;
     match *change {
@@ -414,20 +415,29 @@ pub fn describe(device: &Device, change: &Change) -> String {
             Some(was) => format!("brightness {was} → {level} %"),
             None => format!("brightness {level} %"),
         },
-        Change::White(kelvin) => match (a.color_mode(), a.color_temperature()) {
-            (Some(ColorMode::Temperature), Some(was)) => format!("white {was} → {kelvin} K"),
+        Change::White(kelvin) => match (a.color_mode(), a.color_temperature(), shown_color(a)) {
+            (Some(ColorMode::Temperature), Some(was), _) => format!("white {was} → {kelvin} K"),
+            (Some(ColorMode::Color), _, Some(was)) => format!("color {was} → white {kelvin} K"),
             _ => format!("white {kelvin} K"),
         },
         Change::Color { hue, saturation } => {
             let new = Color { hue, saturation };
-            match (a.color_mode(), a.color_hue(), a.color_saturation()) {
-                (Some(ColorMode::Color), Some(hue), Some(saturation)) => {
-                    format!("color {} → {new}", Color { hue, saturation })
+            match (a.color_mode(), a.color_temperature(), shown_color(a)) {
+                (Some(ColorMode::Color), _, Some(was)) => format!("color {was} → {new}"),
+                (Some(ColorMode::Temperature), Some(was), _) => {
+                    format!("white {was} K → color {new}")
                 }
                 _ => format!("color {new}"),
             }
         }
     }
+}
+
+fn shown_color(a: &Attributes) -> Option<Color> {
+    Some(Color {
+        hue: a.color_hue()?,
+        saturation: a.color_saturation()?,
+    })
 }
 
 fn already(device: &Device) -> String {
@@ -679,7 +689,10 @@ mod tests {
             describe(&light, &Change::Brightness(40)),
             "brightness 100 → 40 %"
         );
-        assert_eq!(describe(&light, &Change::White(2700)), "white 2700 K");
+        assert_eq!(
+            describe(&light, &Change::White(2700)),
+            "color 290° 42 % → white 2700 K"
+        );
         assert_eq!(
             describe(
                 &light,
@@ -693,6 +706,17 @@ mod tests {
         assert_eq!(
             theme::describe_state(&light),
             "on, brightness 100 %, color 290° 42 %"
+        );
+        let white = strip(&json!({"colorMode": "temperature", "colorTemperature": 2202}));
+        assert_eq!(
+            describe(
+                &white,
+                &Change::Color {
+                    hue: 28.0,
+                    saturation: 1.0
+                }
+            ),
+            "white 2202 K → color 28° 100 %"
         );
     }
 

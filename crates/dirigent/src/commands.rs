@@ -627,11 +627,17 @@ fn show_event(home: &mut Home, event: &dirigera::Event, json: bool) {
         .to_string();
     let (who, what) = match &event.kind {
         EventKind::DeviceStateChanged(update) => {
+            let was_reachable = home.device(&update.id).and_then(|d| d.is_reachable);
             home.apply(update);
             let name = home
                 .device(&update.id)
                 .map_or_else(|| update.id.to_string(), |d| d.name().to_owned());
-            (name, theme::describe_update(update))
+            let what = theme::describe_update(update, was_reachable);
+            if what.is_empty() {
+                // Only when it was last seen, or what it already was.
+                return;
+            }
+            (name, what)
         }
         EventKind::RemotePress { device, pattern } => {
             let name = home
