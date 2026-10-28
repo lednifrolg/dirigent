@@ -8,7 +8,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
 use super::keymap::{BINDINGS, Hint};
-use super::model::{self, Dialog, Entry, Link, Model, Overlay, Phase, Row, Tab, Tone, count};
+use super::model::{
+    self, Dialog, Entry, FLASH, Link, Model, Overlay, Phase, Picker, PickerRow, Row, SWITCH_FLASH,
+    Tab, Tone, Wheel, count, presets,
+};
 use crate::theme::{self, LOW_BATTERY, Rgb};
 
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
@@ -41,7 +44,11 @@ const VALUE: usize = 8;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     Row(Row),
+    /// The dot of a device: a click switches it.
+    Toggle(Row),
     Tab(Tab),
+    /// A bar of the selected light: the wheel turns it.
+    Wheel(Wheel),
 }
 
 /// A screen area the mouse can point at.
@@ -106,8 +113,16 @@ pub fn render(model: &Model, frame: &mut Frame) -> Vec<Hotspot> {
             dialog(frame, body, " dirigent ", text);
         }
     }
+    if model.phase == Phase::Ready && matches!(model.link, Link::Offline { .. }) {
+        // Panes go dim while the hub is out of reach: what they show may be old.
+        frame.buffer_mut().set_style(body, DIM);
+    }
     statusline(model, frame, status);
     hint_bar(model, frame, hints, shape);
+    if let Some(open) = &model.picker {
+        picker(model, open, frame, area);
+        spots.clear();
+    }
     if model.overlay == Overlay::Help {
         help(frame, area);
         spots.clear();
@@ -160,6 +175,16 @@ fn wide(model: &Model, frame: &mut Frame, body: Rect, spots: &mut Vec<Hotspot>) 
         Paragraph::new(detail(model, usize::from(inner.width))),
         inner,
     );
+    // The bars of a light sit under its header and a blank line, in the order drawn.
+    for (index, wheel) in wheels(model).into_iter().enumerate() {
+        let y = inner.y + 2 + u16::try_from(index).unwrap_or(0);
+        if y < inner.bottom() {
+            spots.push(Hotspot {
+                area: Rect::new(inner.x, y, inner.width, 1),
+                target: Target::Wheel(wheel),
+            });
+        }
+    }
 
     let state = if model.link == Link::Live {
         "live"
@@ -221,7 +246,8 @@ fn tabs(model: &Model, frame: &mut Frame, body: Rect, spots: &mut Vec<Hotspot>) 
 }
 
 fn on_count(model: &Model) -> String {
-    let Some(home) = &model.home else {
+    let shown = model.shown_home();
+    let Some(home) = &shown else {
         return String::new();
     };
     let switchable: Vec<&Device> = home
@@ -277,6 +303,22 @@ fn room_color(room: &Room) -> Color {
     .map_or(Color::Reset, |(_, color)| color)
 }
 
+/// A device's dot; it blinks while the device identifies itself.
+fn identify_dot(model: &Model, device: &Device) -> Span<'static> {
+    if model
+        .identifying
+        .get(&device.id)
+        .is_some_and(|until| *until > model.now)
+    {
+        if !model.animations {
+            return Span::styled("◉", Style::new().fg(ACCENT));
+        }
+        let lit = (model.now.as_millisecond() / 250) % 2 == 0;
+        return Span::styled(if lit { "●" } else { " " }, BOLD.fg(ACCENT));
+    }
+    dot(device)
+}
+
 fn dot(device: &Device) -> Span<'static> {
     match device.attributes.is_on() {
         Some(true) => Span::styled("●", Style::new().fg(GOOD)),
@@ -297,7 +339,8 @@ fn battery(level: u8, cells: usize) -> Vec<Span<'static>> {
 }
 
 fn list(model: &Model, frame: &mut Frame, area: Rect, spots: &mut Vec<Hotspot>) {
-    let Some(home) = &model.home else {
+    let shown = model.shown_home();
+    let Some(home) = &shown else {
         return;
     };
     let lines = model::lines(home);
@@ -312,17 +355,36 @@ fn list(model: &Model, frame: &mut Frame, area: Rect, spots: &mut Vec<Hotspot>) 
         let rect = Rect::new(area.x, y, area.width, 1);
         let is_selected = Some(index) == selected;
         let text = list_line(model, home, line, is_selected, usize::from(area.width));
-        let style = if is_selected {
-            Style::new().bg(SELECTED)
-        } else {
-            Style::new()
+        let flashed = match line {
+            model::Line::Device(device) => model
+                .flashes
+                .get(&device.id)
+                .map(|at| model.now.duration_since(*at)),
+            _ => None,
+        };
+        // A change from elsewhere lights the row up, then lets it fade.
+        let style = match flashed {
+            Some(since) if since < FLASH / 3 => Style::new().fg(Color::Black).bg(WARN),
+            Some(since) if since < FLASH => {
+                Style::new()
+                    .fg(WARN)
+                    .bg(if is_selected { SELECTED } else { Color::Reset })
+            }
+            _ if is_selected => Style::new().bg(SELECTED),
+            _ => Style::new(),
         };
         frame.render_widget(Paragraph::new(text).style(style), rect);
         if let Some(row) = line.row() {
             spots.push(Hotspot {
                 area: rect,
-                target: Target::Row(row),
+                target: Target::Row(row.clone()),
             });
+            if let model::Line::Device(_) = line {
+                spots.push(Hotspot {
+                    area: Rect::new(area.x + 3, y, 3, 1),
+                    target: Target::Toggle(row),
+                });
+            }
         }
     }
 }
@@ -367,7 +429,7 @@ fn list_line(
             let left = vec![
                 Span::raw("  "),
                 mark,
-                dot(device),
+                identify_dot(model, device),
                 Span::raw(" "),
                 Span::styled(
                     name.trim_end().to_owned(),
@@ -383,7 +445,17 @@ fn list_line(
                 Span::styled("▶ ", Style::new().fg(PRESS)),
                 Span::raw(scene.name().to_owned()),
             ];
-            let right = vec![Span::styled(count(scene.actions.len(), "action"), DIM)];
+            let left_for = model
+                .scene_runs
+                .get(&scene.id)
+                .map(|until| until.duration_since(model.now).as_secs().max(0));
+            let right = match left_for {
+                Some(seconds) => vec![Span::styled(
+                    format!("ran · undo {seconds} s"),
+                    Style::new().fg(WARN),
+                )],
+                None => vec![Span::styled(count(scene.actions.len(), "action"), DIM)],
+            };
             spread(left, right, width)
         }
         model::Line::Remote(remote) => {
@@ -426,7 +498,13 @@ fn device_state(model: &Model, device: &Device) -> Vec<Span<'static>> {
                 spans.push(Span::styled("■ ", Style::new().fg(rgb(color))));
             }
             if let Some(level) = a.light_level() {
-                let bar = BARS[usize::from(level.saturating_sub(1)) * (BARS.len() - 1) / 99];
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a percentage, clamped to 1-100 first"
+                )]
+                let moving = bar_level(model, device, level).round().clamp(1.0, 100.0) as usize;
+                let bar = BARS[(moving - 1) * (BARS.len() - 1) / 99];
                 spans.push(Span::styled(bar.to_string(), Style::new().fg(ACCENT)));
                 spans.push(Span::raw(format!(" {level:>3} %")));
             }
@@ -436,6 +514,37 @@ fn device_state(model: &Model, device: &Device) -> Vec<Span<'static>> {
         Some(false) => vec![Span::styled("off", DIM)],
         None => vec![],
     }
+}
+
+/// Where a brightness bar is drawn: running to `level` after a change, else at it.
+fn bar_level(model: &Model, device: &Device, level: u8) -> f64 {
+    model
+        .motions
+        .get(&device.id)
+        .filter(|motion| motion.running(model.now))
+        .map_or(f64::from(level), |motion| motion.value(model.now))
+}
+
+/// The bars of the selected light the wheel can turn, top to bottom.
+fn wheels(model: &Model) -> Vec<Wheel> {
+    let Some(Row::Device(id)) = &model.selected else {
+        return vec![];
+    };
+    let Some(device) = model.device(id).filter(|d| d.kind() == DeviceKind::Light) else {
+        return vec![];
+    };
+    let controls = device.controls();
+    let mut wheels = Vec::new();
+    if controls.brightness {
+        wheels.push(Wheel::Brightness);
+    }
+    if controls.white.is_some() {
+        wheels.push(Wheel::White);
+    }
+    if controls.color {
+        wheels.extend([Wheel::Hue, Wheel::Saturation]);
+    }
+    wheels
 }
 
 fn selected_title(model: &Model) -> (String, String) {
@@ -477,11 +586,17 @@ fn row(name: &str, mut value: Vec<Span<'static>>) -> Line<'static> {
     Line::from(value)
 }
 
-fn pill(on: bool) -> Span<'static> {
-    if on {
-        Span::styled(" ON ", BOLD.fg(Color::Black).bg(GOOD))
-    } else {
-        Span::styled(" OFF ", BOLD.bg(MUTED))
+fn pill(model: &Model, device: &Device, on: bool) -> Span<'static> {
+    // Switched from here a moment ago: the state lights up.
+    let flashing = model
+        .switched
+        .get(&device.id)
+        .is_some_and(|at| model.now.duration_since(*at) < SWITCH_FLASH);
+    match (on, flashing) {
+        (true, true) => Span::styled(" ON ", BOLD.fg(Color::Black).bg(BRIGHT)),
+        (true, false) => Span::styled(" ON ", BOLD.fg(Color::Black).bg(GOOD)),
+        (false, true) => Span::styled(" OFF ", BOLD.fg(Color::Black).bg(BRIGHT)),
+        (false, false) => Span::styled(" OFF ", BOLD.bg(MUTED)),
     }
 }
 
@@ -534,7 +649,8 @@ fn gradient(
 }
 
 fn detail(model: &Model, width: usize) -> Vec<Line<'static>> {
-    let Some(home) = &model.home else {
+    let shown = model.shown_home();
+    let Some(home) = &shown else {
         return vec![];
     };
     match &model.selected {
@@ -595,10 +711,13 @@ fn light_detail(model: &Model, device: &Device, width: usize) -> Vec<Line<'stati
     let on = a.is_on() == Some(true);
     let bars = bar_width(width);
     let mode = a.color_mode();
-    let mut lines = vec![header(device, Some(pill(on))), Line::default()];
+    let mut lines = vec![
+        header(device, Some(pill(model, device, on))),
+        Line::default(),
+    ];
     if controls.brightness {
         let level = a.light_level().unwrap_or(0);
-        let mut value = bar(f64::from(level) / 100.0, bars, ACCENT, on);
+        let mut value = bar(bar_level(model, device, level) / 100.0, bars, ACCENT, on);
         value.push(Span::raw(format!("{:>VALUE$}", format!("{level} %"))));
         lines.push(row("brightness", value));
     }
@@ -703,7 +822,10 @@ fn firmware(device: &Device) -> Option<Line<'static>> {
 
 fn outlet_detail(model: &Model, home: &Home, device: &Device) -> Vec<Line<'static>> {
     let on = device.attributes.is_on() == Some(true);
-    let mut lines = vec![header(device, Some(pill(on))), Line::default()];
+    let mut lines = vec![
+        header(device, Some(pill(model, device, on))),
+        Line::default(),
+    ];
     lines.push(row("switch", vec![Span::raw("on and off")]));
     let remotes = links(home, device);
     if !remotes.is_empty() {
@@ -882,7 +1004,12 @@ fn compact_detail(model: &Model, width: usize) -> Vec<Line<'static>> {
     let Some(Row::Device(id)) = &model.selected else {
         return vec![];
     };
-    let Some(device) = model.device(id).filter(|d| d.kind() == DeviceKind::Light) else {
+    let shown = model.shown_home();
+    let Some(device) = shown
+        .as_ref()
+        .and_then(|home| home.device(id))
+        .filter(|d| d.kind() == DeviceKind::Light)
+    else {
         return vec![];
     };
     let a = &device.attributes;
@@ -940,6 +1067,7 @@ fn activity_line(model: &Model, entry: &Entry, width: usize) -> Line<'static> {
         Tone::Warn => ("⚠", WARN),
         Tone::Bad => ("✗", BAD),
         Tone::Press => ("◆", PRESS),
+        Tone::Pending => (spinner_frame(model), ACCENT),
     };
     let right = entry
         .source
@@ -960,9 +1088,14 @@ fn activity_line(model: &Model, entry: &Entry, width: usize) -> Line<'static> {
     spread(left, right, width)
 }
 
-fn spinner(model: &Model) -> Span<'static> {
+fn spinner_frame(model: &Model) -> &'static str {
+    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let frame = usize::try_from(model.now.as_millisecond() / 80).unwrap_or(0) % SPINNER.len();
-    Span::styled(SPINNER[frame].to_string(), Style::new().fg(ACCENT))
+    FRAMES[frame]
+}
+
+fn spinner(model: &Model) -> Span<'static> {
+    Span::styled(spinner_frame(model), Style::new().fg(ACCENT))
 }
 
 /// A box in the middle of `area` with `text`.
@@ -1104,10 +1237,58 @@ fn statusline(model: &Model, frame: &mut Frame, area: Rect) {
     frame.render_widget(line(&segments), area);
 }
 
+/// The hints the selection allows, and what space does to it.
+fn allowed(model: &Model) -> (Vec<Hint>, Option<&'static str>) {
+    let Some(home) = &model.home else {
+        return (vec![], None);
+    };
+    match &model.selected {
+        Some(Row::Device(id)) => {
+            let Some(device) = home.device(id) else {
+                return (vec![], None);
+            };
+            let controls = device.controls();
+            let mut hints = Vec::new();
+            for (allows, hint) in [
+                (controls.power, Hint::Activate),
+                (controls.brightness, Hint::Dim),
+                (controls.white.is_some(), Hint::White),
+                (controls.color || controls.white.is_some(), Hint::Color),
+                (
+                    matches!(device.kind(), DeviceKind::Light | DeviceKind::Outlet),
+                    Hint::Identify,
+                ),
+            ] {
+                if allows {
+                    hints.push(hint);
+                }
+            }
+            (hints, Some("on/off"))
+        }
+        Some(Row::Room(id)) => {
+            let mut hints = vec![Hint::Activate];
+            if home.devices_in(id).any(|d| d.controls().brightness) {
+                hints.push(Hint::Dim);
+            }
+            (hints, Some("room on/off"))
+        }
+        Some(Row::Scene(_)) => (vec![Hint::Activate], Some("run")),
+        None => (vec![], None),
+    }
+}
+
 fn hint_bar(model: &Model, frame: &mut Frame, area: Rect, shape: Shape) {
+    let (allows, activate) = allowed(model);
     // (rank, keys, label); a lower rank stays longer when the window is narrow.
     let hints: Vec<(u8, &str, &str)> = match (&model.overlay, &model.phase) {
         (Overlay::Help, _) => vec![(0, "?", "close"), (0, "Esc", "close")],
+        _ if model.picker.is_some() => vec![
+            (0, "↑↓", "row"),
+            (0, "←→", "change"),
+            (2, "⇧", "fine"),
+            (0, "⏎", "keep"),
+            (0, "Esc", "back"),
+        ],
         (_, Phase::Pairing(Dialog::Failed(_))) => vec![(0, "⏎", "try again"), (0, "q", "quit")],
         (_, Phase::Pairing(_)) => vec![(0, "Esc", "cancel"), (0, "q", "quit")],
         (_, Phase::Unreachable { .. }) => vec![(0, "⏎", "try now"), (0, "q", "quit")],
@@ -1116,12 +1297,31 @@ fn hint_bar(model: &Model, frame: &mut Frame, area: Rect, shape: Shape) {
             .filter(|b| match b.hint {
                 Hint::Always => true,
                 Hint::Tabs => shape == Shape::Tabs,
+                Hint::Undo => !model.undo.is_empty(),
                 Hint::Never => false,
+                hint => allows.contains(&hint),
             })
-            .map(|b| (b.rank, b.short, b.label))
+            .map(|b| {
+                let label = match b.hint {
+                    Hint::Activate => activate.unwrap_or(b.label),
+                    _ => b.label,
+                };
+                (b.rank, b.short, label)
+            })
             .collect(),
     };
-    let version = Span::styled(concat!("dirigent ", env!("CARGO_PKG_VERSION"), " "), DIM);
+    let version = match &model.notice {
+        Some(notice) if notice.until > model.now => {
+            let color = match notice.tone {
+                Tone::Good => GOOD,
+                Tone::Bad => BAD,
+                Tone::Warn => WARN,
+                _ => Color::Reset,
+            };
+            Span::styled(format!("{} ", notice.text), Style::new().fg(color))
+        }
+        _ => Span::styled(concat!("dirigent ", env!("CARGO_PKG_VERSION"), " "), DIM),
+    };
     let line = |hints: &[(u8, &str, &str)]| {
         let mut left = vec![Span::raw(" ")];
         for (index, (_, key, label)) in hints.iter().enumerate() {
@@ -1141,6 +1341,129 @@ fn hint_bar(model: &Model, frame: &mut Frame, area: Rect, shape: Shape) {
         hints.remove(least);
     }
     frame.render_widget(line(&hints), area);
+}
+
+fn picker(model: &Model, open: &Picker, frame: &mut Frame, area: Rect) {
+    let Some(device) = model
+        .device(&open.device)
+        .map(|d| model.shown(d).into_owned())
+    else {
+        return;
+    };
+    let controls = device.controls();
+    let mut can = Vec::new();
+    if controls.color {
+        can.push("any hue and saturation".to_owned());
+    }
+    if let Some(range) = controls.white {
+        can.push(format!("white {range}"));
+    }
+    let footer = format!("{} · the light follows right away", can.join(", or "));
+    // As wide as the note under it, so the bars end with it.
+    let width = footer
+        .chars()
+        .count()
+        .clamp(56, usize::from(area.width.saturating_sub(8)).max(40));
+    let mut text = preset_lines(open, &device, width);
+    text.push(Line::default());
+    text.extend(picker_rows(model, open, &device, width));
+    text.push(Line::default());
+    text.push(Line::styled(footer, DIM));
+    dialog(frame, area, &format!(" color · {} ", device.name()), text);
+}
+
+/// The marker and label of a picker row; the row `←→` changes stands out.
+fn picker_head(open: &Picker, row: PickerRow, name: &str) -> Vec<Span<'static>> {
+    if row == open.row {
+        vec![
+            Span::styled("▸ ", BOLD.fg(ACCENT)),
+            Span::styled(fit(name, LABEL), BOLD.fg(ACCENT)),
+        ]
+    } else {
+        vec![Span::raw("  "), Span::styled(fit(name, LABEL), DIM)]
+    }
+}
+
+/// The presets with their swatches, wrapped to `width`; the one `←→` is on stands out.
+fn preset_lines(open: &Picker, device: &Device, width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut line = picker_head(open, PickerRow::Presets, "presets");
+    let mut used = 2 + LABEL;
+    for (index, (name, change)) in presets(device).into_iter().enumerate() {
+        let swatch = match change {
+            dirigera::Change::White(kelvin) => theme::kelvin(kelvin),
+            dirigera::Change::Color { hue, saturation } => theme::hsv(hue, saturation),
+            _ => theme::Rgb(255, 255, 255),
+        };
+        let chip = 2 + name.chars().count() + 2;
+        if used + chip > width {
+            let indent = vec![Span::raw(" ".repeat(2 + LABEL))];
+            lines.push(Line::from(std::mem::replace(&mut line, indent)));
+            used = 2 + LABEL;
+        }
+        let picked = open.row == PickerRow::Presets && index == open.preset;
+        line.push(Span::styled("■ ", Style::new().fg(rgb(swatch))));
+        line.push(if picked {
+            Span::styled(name, BOLD.fg(Color::Black).bg(BRIGHT))
+        } else {
+            Span::raw(name)
+        });
+        line.push(Span::raw("  "));
+        used += chip;
+    }
+    lines.push(Line::from(line));
+    lines
+}
+
+/// Hue, saturation and white as bars under the presets, for what the light can show.
+fn picker_rows(model: &Model, open: &Picker, device: &Device, width: usize) -> Vec<Line<'static>> {
+    let a = &device.attributes;
+    let mode = a.color_mode();
+    let bars = width.saturating_sub(2 + LABEL + VALUE).max(8);
+    let shown = |on: bool| if on { Style::new() } else { DIM };
+    let hue = a.color_hue().unwrap_or(0.0);
+    let saturation = a.color_saturation().unwrap_or(0.0);
+    let mut lines = Vec::new();
+    for row in Picker::rows(device) {
+        let (name, mut bar, value, lit) = match row {
+            PickerRow::Presets => continue,
+            PickerRow::Hue => (
+                "hue",
+                gradient(bars, hue / 359.0, model.colors, |share| {
+                    theme::hsv(share * 359.0, 0.9)
+                }),
+                format!("{hue:.0}°"),
+                mode == Some(ColorMode::Color),
+            ),
+            PickerRow::Saturation => (
+                "saturation",
+                gradient(bars, saturation, model.colors, |share| {
+                    theme::hsv(hue, share)
+                }),
+                format!("{:.0} %", saturation * 100.0),
+                mode == Some(ColorMode::Color),
+            ),
+            PickerRow::White => {
+                let Some(range) = device.controls().white else {
+                    continue;
+                };
+                let kelvin = a.color_temperature().unwrap_or(range.warmest);
+                let mark = f64::from(kelvin.saturating_sub(range.warmest))
+                    / f64::from((range.coolest - range.warmest).max(1));
+                (
+                    "white",
+                    gradient(bars, mark, model.colors, |share| white_at(range, share)),
+                    format!("{kelvin} K"),
+                    mode == Some(ColorMode::Temperature),
+                )
+            }
+        };
+        let mut spans = picker_head(open, row, name);
+        spans.append(&mut bar);
+        spans.push(Span::styled(format!("{value:>VALUE$}"), shown(lit)));
+        lines.push(Line::from(spans));
+    }
+    lines
 }
 
 fn help(frame: &mut Frame, area: Rect) {
@@ -1273,6 +1596,59 @@ mod tests {
         model.update(key(KeyCode::Enter));
         model.update(Msg::Pairing(Pairing::Done(Box::new(connected()))));
         assert_eq!(model.phase, Phase::Ready);
+    }
+
+    #[test]
+    fn a_change_on_its_way_and_confirmed() {
+        let mut model = lived_in();
+        model.update(key(KeyCode::Char(' ')));
+        insta::assert_snapshot!("change_on_its_way", screen(&model, 110, 26));
+        let later = model.now + jiff::SignedDuration::from_millis(130);
+        let effects = model.update(Msg::Tick(later));
+        let Some(model::Effect::Send { batch, .. }) = effects.first() else {
+            panic!("{effects:?}");
+        };
+        model.update(Msg::Sent {
+            batch: *batch,
+            result: Ok(()),
+        });
+        model.update(Msg::Tick(later + jiff::SignedDuration::from_millis(250)));
+        model.update(event(&json!({
+            "type": "deviceStateChanged",
+            "data": { "id": STRIP, "attributes": { "isOn": false } },
+        })));
+        insta::assert_snapshot!("change_confirmed", screen(&model, 110, 26));
+    }
+
+    #[test]
+    fn color_picker() {
+        let mut model = lived_in();
+        model.update(key(KeyCode::Char('c')));
+        model.update(key(KeyCode::Down));
+        insta::assert_snapshot!(screen(&model, 110, 26));
+    }
+
+    #[test]
+    fn a_notice_says_what_cannot_be_done() {
+        let mut model = lived_in();
+        select(&mut model, LAMP);
+        model.update(key(KeyCode::Right));
+        insta::assert_snapshot!(screen(&model, 110, 26));
+    }
+
+    #[test]
+    fn a_scene_counts_down_its_undo_window() {
+        let mut model = lived_in();
+        let scene = dirigera::SceneId("a1b2c3d4-0000-4000-8000-0000000000b1".into());
+        model.update(Msg::Select(Row::Scene(scene.clone())));
+        model.update(key(KeyCode::Enter));
+        model.update(Msg::SceneDone {
+            scene,
+            undo: false,
+            result: Ok(()),
+        });
+        model.update(Msg::Tick(model.now + jiff::SignedDuration::from_secs(4)));
+        insta::assert_snapshot!(screen(&model, 110, 26));
     }
 
     #[test]

@@ -8,15 +8,22 @@ switches real devices in a real home.
 
 ## Status
 
-Early development: the one-shot commands work, and the TUI shows the home live; changing devices
-from the TUI comes next. Verified live on hub firmware 2.975.3.
+Early development: the one-shot commands and the TUI work. Verified live on hub firmware 2.975.3.
 
 ## Usage
 
 `dirigent` without a command opens the interactive TUI: rooms with their devices, scenes and
 remotes on the left, the selected one in detail, and every change in the home as it happens, also
-from remotes and other apps. It pairs with the hub on its first start. Changing devices from the
-TUI comes next; for now that is what the commands are for:
+from remotes and other apps. It pairs with the hub on its first start.
+
+In the TUI, `↑`/`↓` select, `␣` switches a device or a whole room and runs a scene, `←`/`→` dim
+(with Shift by 1 %), `[`/`]` make white warmer or cooler, `c` opens a color picker with presets
+and any hue and saturation, `i` makes a device blink, and `u` takes back the latest change. A
+change shows at once and goes out right away; the activity pane says when the device reports it.
+The mouse selects rows, switches a device by its dot, and turns a light's bars with the wheel. `?`
+lists every key.
+
+The same, one command at a time:
 
 ```sh
 dirigent pair                 # finds the hub; press its action button when asked
@@ -43,6 +50,14 @@ bottom of the hub. The token the hub issues is kept in `~/.local/state/dirigent/
 readable only by you, together with the fingerprint of the hub's certificate: later connections
 accept only that certificate. When the hub's address changes, dirigent finds it again by its
 identity. Nothing leaves your home network. `DIRIGENT_HOME` puts the file in another directory.
+
+## Configuration
+
+`~/.config/dirigent/config.toml` is optional:
+
+```toml
+animations = false   # no flashing rows, blinking dots or bars in motion in the TUI
+```
 
 ## Exit codes
 
