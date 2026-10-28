@@ -2,47 +2,22 @@
 //! devices.
 
 use std::io::IsTerminal;
-use std::net::{IpAddr, SocketAddr};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anstream::eprint;
-use dirigera::{
-    API_PORT, Backoff, Client, Device, DeviceKind, Discovered, EventKind, EventStream, Home,
-    PRESS_WINDOW, Pairing, Scene, UserId,
-};
+use dirigera::{Backoff, Device, DeviceKind, EventKind, EventStream, Home, Scene, UserId};
 use jiff::Timestamp;
 use serde::Serialize;
 
-use crate::connect::{self, Hub};
+use crate::connect::Hub;
 use crate::error::AppError;
 use crate::names::{Kind, Target};
 use crate::output::{self, BOLD, DIM, LOW_BATTERY, YELLOW, paint};
+use crate::pairing::{self, DISCOVERY_WAIT};
 use crate::paths::Paths;
 use crate::store::Paired;
+use crate::theme;
 use crate::wanted::Color;
-
-const DISCOVERY_WAIT: Duration = Duration::from_secs(3);
-
-/// How the hub lists dirigent among its users: `dirigent@` and this computer's name.
-fn client_name() -> String {
-    let host = gethostname::gethostname();
-    let host = host.to_string_lossy();
-    let host = host.split('.').next().unwrap_or_default();
-    if host.is_empty() {
-        "dirigent".to_owned()
-    } else {
-        format!("dirigent@{host}")
-    }
-}
-
-fn address(text: &str) -> Result<SocketAddr, AppError> {
-    if let Ok(address) = text.parse() {
-        return Ok(address);
-    }
-    text.parse::<IpAddr>()
-        .map(|ip| SocketAddr::new(ip, API_PORT))
-        .map_err(|_| AppError::Usage(format!("{text} is not an IP address")))
-}
 
 pub async fn pair(
     paths: &Paths,
@@ -65,130 +40,39 @@ pub async fn pair(
             Err(error) => return Err(error),
         }
     }
-    let test_hub = connect::test_hub()?;
-    let (address, found) = match (test_hub, given) {
-        (Some(address), _) => (address, None),
-        (None, Some(text)) => (address(text)?, None),
-        (None, None) => the_hub_on_the_network().await?,
-    };
-    let pairing = if test_hub.is_some() {
-        Pairing::start_plain(address).await?
-    } else {
-        Pairing::start(address).await?
-    };
-    let client_name = name.unwrap_or_else(client_name);
+    let (address, found) = pairing::find_hub(given).await?;
+    let started = pairing::start(address).await?;
+    let client_name = name.unwrap_or_else(pairing::client_name);
     output::line(format_args!(
         "Press the action button on the bottom of the hub at {address}."
     ));
-    let token = wait_for_button(&pairing, &client_name).await?;
-    let fingerprint = pairing.fingerprint();
-    let client = match fingerprint {
-        Some(pin) => Client::new(address, pin, token.clone())?,
-        None => Client::plain(address, token.clone())?,
-    };
-    let home = client.home().await?;
-    let hub_device = home.hub.as_ref();
-    let uuid = found.as_ref().map_or_else(
-        || {
-            hub_device
-                .map(|hub| hub.id.as_str().trim_end_matches("_1").to_owned())
-                .unwrap_or_default()
-        },
-        |hub| hub.uuid.clone(),
-    );
-    let name = hub_device
-        .map(|hub| hub.name().to_owned())
-        .filter(|name| !name.is_empty())
-        .or_else(|| found.as_ref().map(|hub| hub.hostname.clone()))
-        .unwrap_or_else(|| "DIRIGERA".to_owned());
-    let mut paired = Paired {
-        uuid,
-        name,
-        addresses: vec![address],
-        fingerprint: fingerprint.map(|pin| pin.to_string()),
-        token: token.expose().to_owned(),
-        user: home.user.as_ref().map(|user| user.uid.to_string()),
-        since: Timestamp::now(),
-    };
-    if let Some(found) = found {
-        paired.prefer(address, found.addresses);
+    // A countdown on a terminal, rewritten in place.
+    let countdown = std::io::stderr().is_terminal();
+    let token = pairing::wait_for_press(&started, &client_name, |left| {
+        if countdown {
+            eprint!("\r{}", paint(DIM, format!("waiting {} s", left.as_secs())));
+        }
+    })
+    .await;
+    if countdown {
+        eprint!("\r\x1b[2K");
     }
-    paired.save(paths)?;
+    let token = token.map_err(|error| match error {
+        AppError::Unreachable(why) => {
+            AppError::Unreachable(format!("{why}; run `dirigent pair` again"))
+        }
+        other => other,
+    })?;
+    let hub = pairing::remember(paths, address, found, &started, token).await?;
     output::success(format_args!(
         "paired with {} at {address}; the hub lists dirigent as {client_name}",
-        paired.name
+        hub.paired.name
     ));
     output::note(format_args!(
         "the token is in {}, readable only by you",
         paths.hub().display()
     ));
     Ok(())
-}
-
-/// The one hub that answers on the network, and the address to pair at.
-async fn the_hub_on_the_network() -> Result<(SocketAddr, Option<Discovered>), AppError> {
-    let mut hubs = dirigera::discover(DISCOVERY_WAIT).await?;
-    match hubs.len() {
-        0 => Err(AppError::Unreachable(
-            "no hub answered on the network; give its address: dirigent pair 192.168.1.20".into(),
-        )),
-        1 => {
-            let hub = hubs.remove(0);
-            let address = *hub.addresses.first().ok_or_else(|| {
-                AppError::Unreachable(format!("the hub {} announced no address", hub.hostname))
-            })?;
-            Ok((address, Some(hub)))
-        }
-        _ => {
-            let list: Vec<String> = hubs
-                .iter()
-                .map(|hub| {
-                    let at = hub
-                        .addresses
-                        .first()
-                        .map(ToString::to_string)
-                        .unwrap_or_default();
-                    format!("{} at {at}", hub.hostname)
-                })
-                .collect();
-            Err(AppError::Usage(format!(
-                "several hubs answered: {}; pick one: dirigent pair <address>",
-                list.join(", ")
-            )))
-        }
-    }
-}
-
-/// Asks for the token about once a second until the button is pressed, with a countdown on a
-/// terminal.
-async fn wait_for_button(
-    pairing: &Pairing,
-    client_name: &str,
-) -> Result<dirigera::Token, AppError> {
-    let started = Instant::now();
-    let countdown = std::io::stderr().is_terminal();
-    loop {
-        if let Some(token) = pairing.finish(client_name).await? {
-            if countdown {
-                eprint!("\r\x1b[2K");
-            }
-            return Ok(token);
-        }
-        let left = PRESS_WINDOW.saturating_sub(started.elapsed());
-        if left.is_zero() {
-            if countdown {
-                eprint!("\r\x1b[2K");
-            }
-            return Err(AppError::Unreachable(format!(
-                "the button was not pressed within {} s; run `dirigent pair` again",
-                PRESS_WINDOW.as_secs()
-            )));
-        }
-        if countdown {
-            eprint!("\r{}", paint(DIM, format!("waiting {} s", left.as_secs())));
-        }
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
 }
 
 pub async fn unpair(paths: &Paths) -> Result<(), AppError> {
@@ -561,7 +445,7 @@ fn device_status(home: &Home, device: &Device, json: bool) -> Result<(), AppErro
     };
     let seen = device
         .seen_at()
-        .map(|at| format!(" · seen {}", output::ago(at, Timestamp::now())))
+        .map(|at| format!(" · seen {}", theme::ago(at, Timestamp::now())))
         .unwrap_or_default();
     row("reachable", format!("{reachable}{}", paint(DIM, seen)));
     if let Some(firmware) = &view.firmware {
@@ -632,7 +516,7 @@ fn scene_status(home: &Home, scene: &Scene, json: bool) -> Result<(), AppError> 
             "  {}",
             paint(
                 DIM,
-                format!("last run {}", output::ago(at, Timestamp::now()))
+                format!("last run {}", theme::ago(at, Timestamp::now()))
             )
         ));
     }
@@ -747,7 +631,7 @@ fn show_event(home: &mut Home, event: &dirigera::Event, json: bool) {
             let name = home
                 .device(&update.id)
                 .map_or_else(|| update.id.to_string(), |d| d.name().to_owned());
-            (name, describe_update(update))
+            (name, theme::describe_update(update))
         }
         EventKind::RemotePress { device, pattern } => {
             let name = home
@@ -771,51 +655,6 @@ fn show_event(home: &mut Home, event: &dirigera::Event, json: bool) {
         paint(DIM, time),
         output::pad(&who, 14)
     ));
-}
-
-/// The changes in a state update, in words where dirigent knows them.
-fn describe_update(update: &dirigera::DeviceUpdate) -> String {
-    let a = &update.attributes;
-    let mut parts = Vec::new();
-    if let Some(on) = a.is_on() {
-        parts.push(if on {
-            "on".to_owned()
-        } else {
-            "off".to_owned()
-        });
-    }
-    if let Some(level) = a.light_level() {
-        parts.push(format!("brightness {level} %"));
-    }
-    if let Some(kelvin) = a.color_temperature() {
-        parts.push(format!("white {kelvin} K"));
-    }
-    if let (Some(hue), Some(saturation)) = (a.color_hue(), a.color_saturation()) {
-        parts.push(format!("color {}", Color { hue, saturation }));
-    }
-    if let Some(level) = a.battery_percentage() {
-        parts.push(format!("battery {level} %"));
-    }
-    if let Some(reachable) = update.is_reachable {
-        parts.push(if reachable {
-            "reachable".to_owned()
-        } else {
-            "unreachable".to_owned()
-        });
-    }
-    let known = [
-        "isOn",
-        "lightLevel",
-        "colorTemperature",
-        "colorHue",
-        "colorSaturation",
-        "colorMode",
-        "batteryPercentage",
-    ];
-    for (key, value) in a.iter().filter(|(key, _)| !known.contains(key)) {
-        parts.push(paint(DIM, format!("{key}={value}")));
-    }
-    parts.join(", ")
 }
 
 /// Resolves the names a command was given into devices and rooms.

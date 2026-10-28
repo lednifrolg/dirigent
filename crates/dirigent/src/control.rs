@@ -17,6 +17,7 @@ use crate::connect::Hub;
 use crate::error::AppError;
 use crate::names::Target;
 use crate::output::{self, DIM, GREEN, RED, YELLOW, paint};
+use crate::theme;
 use crate::wanted::{Color, Level, White};
 
 /// How long a device gets to report a change. Lights fade for about 2.5 s.
@@ -393,45 +394,12 @@ async fn read_back_until(
 async fn settle(hub: &Hub, device: &Device, waiting: &Pending) -> Outcome {
     match hub.client.device(&device.id).await {
         Ok(now) if waiting.shows_all(&now.attributes) => Outcome::HubOnly,
-        Ok(now) => Outcome::Different(describe_state(&now)),
+        Ok(now) => Outcome::Different(theme::describe_state(&now)),
         Err(error) => Outcome::Different(format!(
             "could not read it back: {}",
             output::message(&error.into())
         )),
     }
-}
-
-/// What a device shows, for the attributes changes touch.
-fn describe_state(device: &Device) -> String {
-    let a = &device.attributes;
-    let mut parts = Vec::new();
-    if let Some(on) = a.is_on() {
-        parts.push(if on {
-            "on".to_owned()
-        } else {
-            "off".to_owned()
-        });
-    }
-    let controls = device.controls();
-    if controls.brightness
-        && let Some(level) = a.light_level()
-    {
-        parts.push(format!("brightness {level} %"));
-    }
-    match a.color_mode() {
-        Some(ColorMode::Temperature) => {
-            if let Some(kelvin) = a.color_temperature() {
-                parts.push(format!("white {kelvin} K"));
-            }
-        }
-        Some(ColorMode::Color) => {
-            if let (Some(hue), Some(saturation)) = (a.color_hue(), a.color_saturation()) {
-                parts.push(format!("color {}", Color { hue, saturation }));
-            }
-        }
-        _ => {}
-    }
-    parts.join(", ")
 }
 
 /// "off → on", "brightness 100 → 40 %", "white 2638 → 2700 K", "color 290° 42 % → 30° 80 %".
@@ -463,7 +431,7 @@ fn describe(device: &Device, change: &Change) -> String {
 }
 
 fn already(device: &Device) -> String {
-    let state = describe_state(device);
+    let state = theme::describe_state(device);
     if state.is_empty() {
         "already so".to_owned()
     } else {
@@ -723,7 +691,7 @@ mod tests {
             "color 290° 42 % → 30° 80 %"
         );
         assert_eq!(
-            describe_state(&light),
+            theme::describe_state(&light),
             "on, brightness 100 %, color 290° 42 %"
         );
     }

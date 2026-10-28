@@ -19,8 +19,10 @@ clap = { version = "4.6", features = ["derive", "wrap_help"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 gethostname = "1.1"
 getrandom = "0.4"
+insta = "1.49"
 jiff = { version = "0.2", features = ["serde"] }
 mdns-sd = "0.21"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache"] }
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
 # `charset` is left out: responses are read as bytes and parsed as UTF-8 JSON. No system proxy:
 # the hub is on the local network.
