@@ -20,7 +20,7 @@ use super::{Effect, Failure, FailureKind, Link, Model, Row, Tone};
 use crate::control::{self, CONFIRM_WITHIN, Wanted};
 use crate::names::Target;
 use crate::theme;
-use crate::wanted::{Level, PRESETS, White};
+use crate::wanted::{Color, Level, PRESETS, White};
 
 /// How long a change waits for others to the same device before it goes out.
 pub const COALESCE: SignedDuration = SignedDuration::from_millis(120);
@@ -263,6 +263,26 @@ fn restore(device: &Device, changes: &[Change]) -> Vec<Change> {
 }
 
 /// The step `[` and `]` take: a tenth of the light's range, in tens of kelvin.
+/// What `device` shows of what a change of `kind` sets, in the words of its activity line: "off",
+/// "90 %", "white 2700 K".
+fn shown_as(device: &Device, kind: Kind) -> String {
+    let a = &device.attributes;
+    let part = match kind {
+        Kind::Power => a.is_on().map(|on| if on { "on" } else { "off" }.to_owned()),
+        Kind::Brightness => a.light_level().map(|level| format!("{level} %")),
+        Kind::Shade => match a.color_mode() {
+            Some(ColorMode::Temperature) => a
+                .color_temperature()
+                .map(|kelvin| format!("white {kelvin} K")),
+            _ => a
+                .color_hue()
+                .zip(a.color_saturation())
+                .map(|(hue, saturation)| format!("color {}", Color { hue, saturation })),
+        },
+    };
+    part.unwrap_or_else(|| theme::describe_state(device))
+}
+
 fn white_step(range: TemperatureRange) -> u32 {
     ((range.coolest - range.warmest) / 100 * 10).max(FINE_KELVIN)
 }
@@ -665,7 +685,7 @@ impl Model {
                     } else {
                         (
                             Tone::Bad,
-                            format!("the hub reports {}", theme::describe_state(&device)),
+                            format!("the hub reports {}", shown_as(&device, pending.kind)),
                         )
                     };
                     if let Some(line) = self.entry(pending.entry) {
@@ -1254,12 +1274,10 @@ mod tests {
         });
         assert!(model.pending.is_empty());
         assert_eq!(model.activity[0].tone, Tone::Bad);
-        assert!(
-            model.activity[0]
-                .source
-                .as_deref()
-                .unwrap()
-                .starts_with("the hub reports on")
+        assert_eq!(
+            model.activity[0].source.as_deref(),
+            Some("the hub reports on"),
+            "only what the change was about"
         );
     }
 

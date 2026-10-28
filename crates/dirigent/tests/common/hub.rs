@@ -194,7 +194,7 @@ impl FakeHub {
         ));
         state.send_all(&event(
             "deviceStateChanged",
-            &json!({ "id": device, "attributes": { "isOn": on } }),
+            &json!({ "id": device, "attributes": { "isOn": on }, "isReachable": true }),
         ));
     }
 
@@ -204,7 +204,7 @@ impl FakeHub {
         match state.reporting {
             Reporting::Events => state.send_all(&event(
                 "deviceStateChanged",
-                &json!({ "id": device, "attributes": attributes }),
+                &json!({ "id": device, "attributes": attributes, "isReachable": true }),
             )),
             Reporting::Silent => {}
             Reporting::Fading => {
@@ -227,7 +227,7 @@ impl FakeHub {
             if state.latest.get(&device) == Some(&change) {
                 state.send_all(&event(
                     "deviceStateChanged",
-                    &json!({ "id": device, "attributes": attributes }),
+                    &json!({ "id": device, "attributes": attributes, "isReachable": true }),
                 ));
             }
         };

@@ -108,8 +108,9 @@ pub fn describe_state(device: &Device) -> String {
     parts.join(", ")
 }
 
-/// The changes in a state update, in words where dirigent knows them.
-pub fn describe_update(update: &DeviceUpdate) -> String {
+/// The changes in a state update, in words where dirigent knows them. The hub sends whether a
+/// device is reachable with every update; it is told only when it changes from `was_reachable`.
+pub fn describe_update(update: &DeviceUpdate, was_reachable: Option<bool>) -> String {
     let a = &update.attributes;
     let mut parts = Vec::new();
     if let Some(on) = a.is_on() {
@@ -131,12 +132,10 @@ pub fn describe_update(update: &DeviceUpdate) -> String {
     if let Some(level) = a.battery_percentage() {
         parts.push(format!("battery {level} %"));
     }
-    if let Some(reachable) = update.is_reachable {
-        parts.push(if reachable {
-            "reachable".to_owned()
-        } else {
-            "unreachable".to_owned()
-        });
+    match (update.is_reachable, was_reachable) {
+        (Some(false), Some(false)) | (Some(true), Some(true) | None) | (None, _) => {}
+        (Some(false), _) => parts.push("unreachable".to_owned()),
+        (Some(true), Some(false)) => parts.push("reachable again".to_owned()),
     }
     let known = [
         "isOn",
@@ -165,6 +164,29 @@ mod tests {
         assert_eq!(hsv(30.0, 0.0), Rgb(255, 255, 255));
         assert_eq!(kelvin(2200), Rgb(255, 176, 102));
         assert_eq!(kelvin(6500), Rgb(222, 232, 255));
+    }
+
+    #[test]
+    fn reachability_is_told_when_it_changes() {
+        let update = |reachable: bool| -> DeviceUpdate {
+            serde_json::from_value(serde_json::json!({
+                "id": "light_1",
+                "attributes": { "isOn": true },
+                "isReachable": reachable,
+            }))
+            .unwrap()
+        };
+        assert_eq!(describe_update(&update(true), Some(true)), "on");
+        assert_eq!(describe_update(&update(true), None), "on");
+        assert_eq!(
+            describe_update(&update(true), Some(false)),
+            "on, reachable again"
+        );
+        assert_eq!(
+            describe_update(&update(false), Some(true)),
+            "on, unreachable"
+        );
+        assert_eq!(describe_update(&update(false), Some(false)), "on");
     }
 
     #[test]

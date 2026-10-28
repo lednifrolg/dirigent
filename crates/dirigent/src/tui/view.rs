@@ -39,8 +39,9 @@ const DETAIL_HEIGHT: u16 = 12;
 /// Width of the labels in the detail pane, and of the values after a bar.
 const LABEL: usize = 12;
 const VALUE: usize = 8;
-/// The narrowest name column of the activity.
+/// The narrowest name column of the activity, and the least room a long source keeps.
 const NAME: usize = 14;
+const SOURCE_MIN: usize = 12;
 
 /// What the mouse can point at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1079,14 +1080,22 @@ fn activity_line(model: &Model, entry: &Entry, names: usize, width: usize) -> Li
         Tone::Press => ("◆", PRESS),
         Tone::Pending => (spinner_frame(model), ACCENT),
     };
-    let right = entry
-        .source
-        .clone()
+    // Time, icon and name take 13 columns and the names. A long source gives way to the text,
+    // down to a few columns; the text gets what the source leaves.
+    let available = width.saturating_sub(13 + names);
+    let source = entry.source.as_deref().map(|source| {
+        let room = available
+            .saturating_sub(entry.what.chars().count() + 1)
+            .max(SOURCE_MIN);
+        fit(source, room).trim_end().to_owned()
+    });
+    let taken = source
+        .as_ref()
+        .map_or(0, |source| source.chars().count() + 1);
+    let room = available.saturating_sub(taken);
+    let right = source
         .map(|source| vec![Span::styled(source, DIM)])
         .unwrap_or_default();
-    // Time, icon and name take 13 columns and the names; the text gets what the source leaves.
-    let source: usize = right.iter().map(Span::width).sum();
-    let room = width.saturating_sub(13 + names + source + usize::from(source > 0));
     let left = vec![
         Span::styled(time, DIM),
         Span::raw("  "),
@@ -1680,6 +1689,29 @@ mod tests {
         };
         assert!(lines(130)[0].contains("scene Late evening updated"));
         assert!(lines(110)[0].contains("scene Late eve… updated"));
+    }
+
+    #[test]
+    fn a_long_source_gives_way_to_what_changed() {
+        let mut model = lived_in();
+        model.activity.push_front(Entry {
+            id: 999,
+            at: model.now,
+            tone: Tone::Bad,
+            who: "Shelf strip".to_owned(),
+            what: "color 290° 42 % → 320° 60 %".to_owned(),
+            source: Some("the hub reports color 290° 42 %, and more besides".to_owned()),
+        });
+        // As wide as the terminal of the live test where the text was lost.
+        let screen = screen(&model, 126, 26);
+        let line = screen
+            .lines()
+            .find(|line| line.contains("→ 320°"))
+            .unwrap_or_else(|| panic!("{screen}"));
+        assert!(
+            line.contains("color 290° 42 % → 320° 60 % the hub reports colo…"),
+            "{line}"
+        );
     }
 
     #[test]
