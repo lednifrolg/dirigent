@@ -1,0 +1,14 @@
+[package]
+name = "dirigent"
+description = "Terminal client for the IKEA DIRIGERA smart home hub over its local API"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap.workspace = true
+
+[lints]
+workspace = true

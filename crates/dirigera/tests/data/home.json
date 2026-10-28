@@ -1,0 +1,292 @@
+{
+  "hub": {
+    "id": "a1b2c3d4-0000-4000-8000-00000000c0de_1",
+    "relationId": "a1b2c3d4-0000-4000-8000-00000000c0de",
+    "type": "gateway",
+    "deviceType": "gateway",
+    "createdAt": "2024-01-15T09:00:00.000Z",
+    "isReachable": true,
+    "lastSeen": "2026-01-01T12:00:00.000Z",
+    "attributes": {
+      "customName": "Test hub",
+      "model": "DIRIGERA Hub for smart products",
+      "manufacturer": "IKEA of Sweden",
+      "firmwareVersion": "2.975.3",
+      "hardwareVersion": "P2.5",
+      "serialNumber": "TESTSERIAL000001",
+      "identifyStarted": "2000-01-01T00:00:00.000Z",
+      "identifyPeriod": 0,
+      "otaStatus": "upToDate",
+      "otaState": "readyToCheck",
+      "otaProgress": 0,
+      "otaPolicy": "autoUpdate",
+      "otaScheduleStart": "00:00",
+      "otaScheduleEnd": "00:00",
+      "permittingJoin": false,
+      "backendConnected": true,
+      "backendConnectionPersistent": true,
+      "backendOnboardingComplete": true,
+      "backendRegion": "eu-central-1",
+      "backendCountryCode": "SE",
+      "userConsents": [
+        { "name": "analytics", "value": "notDetermined" },
+        { "name": "diagnostics", "value": "notDetermined" }
+      ],
+      "logLevel": 3,
+      "coredump": false,
+      "timezone": "Europe/Stockholm",
+      "nextSunSet": "2026-01-01T14:55:00.000Z",
+      "nextSunRise": "2026-01-02T07:43:00.000Z",
+      "sunPosition": "day",
+      "homestate": "home",
+      "countryCode": "SE",
+      "coordinates": { "latitude": 59.33, "longitude": 18.06, "accuracy": -1 },
+      "isOn": false
+    },
+    "capabilities": {
+      "canSend": [],
+      "canReceive": ["customName", "permittingJoin", "userConsents", "logLevel", "time", "timezone", "countryCode", "coordinates"]
+    },
+    "deviceSet": [],
+    "remoteLinks": [],
+    "dynamicFeatures": [
+      { "type": "scenes", "enabled": true, "featureVersion": "1.0.0" }
+    ],
+    "environment": "production"
+  },
+  "devices": [
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000001_1",
+      "type": "light",
+      "deviceType": "light",
+      "createdAt": "2024-01-15T09:10:00.000Z",
+      "isReachable": true,
+      "lastSeen": "2026-01-01T12:00:00.000Z",
+      "attributes": {
+        "customName": "Shelf strip",
+        "model": "ORMANAS LED Strip",
+        "manufacturer": "IKEA of Sweden",
+        "firmwareVersion": "1.1.10",
+        "hardwareVersion": "1",
+        "productCode": "L2112",
+        "isOn": true,
+        "startupOnOff": "startOn",
+        "lightLevel": 60,
+        "startUpCurrentLevel": -1,
+        "colorHue": 30,
+        "colorSaturation": 0.8,
+        "colorTemperature": 2700,
+        "colorTemperatureMin": 4000,
+        "colorTemperatureMax": 2202,
+        "startupTemperature": -1,
+        "colorMode": "color",
+        "identifyStarted": "2000-01-01T00:00:00.000Z",
+        "identifyPeriod": 0,
+        "permittingJoin": false,
+        "otaStatus": "upToDate",
+        "otaState": "readyToCheck",
+        "otaProgress": 0,
+        "otaPolicy": "autoUpdate",
+        "otaScheduleStart": "00:00",
+        "otaScheduleEnd": "00:00",
+        "deviceOnBehavior": { "behavior": "lastValue", "profileId": "" }
+      },
+      "capabilities": {
+        "canSend": [],
+        "canReceive": ["customName", "isOn", "lightLevel", "colorTemperature", "colorHue", "colorSaturation"]
+      },
+      "room": {
+        "id": "a1b2c3d4-0000-4000-8000-0000000000a1",
+        "name": "Study",
+        "color": "ikea_green_no_65",
+        "icon": "rooms_sofa"
+      },
+      "deviceSet": [],
+      "remoteLinks": [],
+      "isHidden": false,
+      "adaptiveProfile": {}
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000002_1",
+      "type": "outlet",
+      "deviceType": "outlet",
+      "createdAt": "2024-01-15T09:20:00.000Z",
+      "isReachable": true,
+      "lastSeen": "2026-01-01T12:00:00.000Z",
+      "attributes": {
+        "customName": "Reading lamp",
+        "model": "TRADFRI control outlet",
+        "manufacturer": "IKEA of Sweden",
+        "firmwareVersion": "2.3.089",
+        "hardwareVersion": "1",
+        "productCode": "E1706",
+        "serialNumber": "TESTSERIAL000002",
+        "isOn": false,
+        "startupOnOff": "startPrevious",
+        "lightLevel": 100,
+        "startUpCurrentLevel": -1,
+        "identifyStarted": "2000-01-01T00:00:00.000Z",
+        "identifyPeriod": 0,
+        "permittingJoin": false,
+        "otaStatus": "upToDate",
+        "otaState": "readyToCheck",
+        "otaProgress": 0,
+        "otaPolicy": "autoUpdate",
+        "otaScheduleStart": "00:00",
+        "otaScheduleEnd": "00:00"
+      },
+      "capabilities": {
+        "canSend": [],
+        "canReceive": ["customName", "isOn", "lightLevel"]
+      },
+      "room": {
+        "id": "a1b2c3d4-0000-4000-8000-0000000000a2",
+        "name": "Bedroom",
+        "color": "ikea_blue_no_58",
+        "icon": "rooms_bed"
+      },
+      "deviceSet": [],
+      "remoteLinks": ["a1b2c3d4-0000-4000-8000-000000000003_1"],
+      "isHidden": false
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000003_1",
+      "type": "controller",
+      "deviceType": "lightController",
+      "createdAt": "2024-01-15T09:30:00.000Z",
+      "isReachable": true,
+      "lastSeen": "2026-01-01T11:58:00.000Z",
+      "attributes": {
+        "customName": "Bedside switch",
+        "model": "TRADFRI on/off switch",
+        "manufacturer": "IKEA of Sweden",
+        "firmwareVersion": "24.4.5",
+        "hardwareVersion": "1",
+        "productCode": "E1743",
+        "batteryPercentage": 7,
+        "isOn": false,
+        "lightLevel": 1,
+        "blindsCurrentLevel": 0,
+        "blindsState": "",
+        "permittingJoin": false,
+        "otaStatus": "updateAvailable",
+        "otaState": "readyToCheck",
+        "otaProgress": 0,
+        "otaPolicy": "autoUpdate",
+        "otaScheduleStart": "00:00",
+        "otaScheduleEnd": "00:00",
+        "circadianPresets": []
+      },
+      "capabilities": {
+        "canSend": ["isOn", "lightLevel", "blindsState"],
+        "canReceive": ["customName"]
+      },
+      "room": {
+        "id": "a1b2c3d4-0000-4000-8000-0000000000a2",
+        "name": "Bedroom",
+        "color": "ikea_blue_no_58",
+        "icon": "rooms_bed"
+      },
+      "deviceSet": [],
+      "remoteLinks": [],
+      "isHidden": false
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-00000000c0de_1",
+      "relationId": "a1b2c3d4-0000-4000-8000-00000000c0de",
+      "type": "gateway",
+      "deviceType": "gateway",
+      "createdAt": "2024-01-15T09:00:00.000Z",
+      "isReachable": true,
+      "lastSeen": "2026-01-01T12:00:00.000Z",
+      "attributes": {
+        "customName": "Test hub",
+        "model": "DIRIGERA Hub for smart products",
+        "manufacturer": "IKEA of Sweden",
+        "firmwareVersion": "2.975.3",
+        "hardwareVersion": "P2.5",
+        "serialNumber": "TESTSERIAL000001",
+        "otaStatus": "upToDate",
+        "otaState": "readyToCheck",
+        "otaProgress": 0,
+        "otaPolicy": "autoUpdate",
+        "timezone": "Europe/Stockholm",
+        "countryCode": "SE",
+        "isOn": false
+      },
+      "capabilities": {
+        "canSend": [],
+        "canReceive": ["customName", "permittingJoin", "timezone", "countryCode"]
+      },
+      "deviceSet": [],
+      "remoteLinks": []
+    }
+  ],
+  "rooms": [
+    {
+      "id": "a1b2c3d4-0000-4000-8000-0000000000a1",
+      "name": "Study",
+      "color": "ikea_green_no_65",
+      "icon": "rooms_sofa"
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-0000000000a2",
+      "name": "Bedroom",
+      "color": "ikea_blue_no_58",
+      "icon": "rooms_bed"
+    }
+  ],
+  "scenes": [
+    {
+      "id": "a1b2c3d4-0000-4000-8000-0000000000b1",
+      "info": { "name": "Evening", "icon": "scenes_briefcase" },
+      "type": "userScene",
+      "triggers": [
+        {
+          "id": "a1b2c3d4-0000-4000-8000-0000000000b2",
+          "type": "app",
+          "triggeredAt": "2025-12-31T18:00:00.000Z",
+          "disabled": false
+        }
+      ],
+      "actions": [
+        {
+          "id": "a1b2c3d4-0000-4000-8000-000000000002_1",
+          "type": "device",
+          "deviceId": "a1b2c3d4-0000-4000-8000-000000000002_1",
+          "attributes": { "isOn": true }
+        }
+      ],
+      "commands": [],
+      "createdAt": "2024-02-01T17:00:00.000Z",
+      "lastCompleted": "2025-12-31T18:00:00.250Z",
+      "lastTriggered": "2025-12-31T18:00:00.250Z",
+      "undoAllowedDuration": 30
+    }
+  ],
+  "deviceSets": [],
+  "adaptiveProfiles": [],
+  "music": { "playlists": [], "favorites": [], "authorized": false },
+  "user": {
+    "uid": "a1b2c3d4-0000-4000-8000-0000000000f1",
+    "name": "dirigent@test",
+    "audience": "homesmart.local",
+    "email": "",
+    "createdTimestamp": "2026-01-01T10:00:00.000Z",
+    "verifiedUid": "",
+    "role": "user",
+    "remoteUser": 0
+  },
+  "users": [
+    {
+      "uid": "a1b2c3d4-0000-4000-8000-0000000000f1",
+      "name": "dirigent@test",
+      "audience": "homesmart.local",
+      "email": "",
+      "createdTimestamp": "2026-01-01T10:00:00.000Z",
+      "verifiedUid": "",
+      "role": "user",
+      "remoteUser": 0
+    }
+  ]
+}
