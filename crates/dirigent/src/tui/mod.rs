@@ -127,14 +127,13 @@ async fn event_loop(
         while let Ok(more) = rx.try_recv() {
             incoming.push(more);
         }
-        let mut messages: Vec<Msg> = incoming
-            .into_iter()
-            .filter_map(|incoming| match incoming {
-                Incoming::Msg(msg) => Some(*msg),
-                Incoming::Mouse(event) => place(event, &hotspots),
-            })
-            .collect();
-        messages.push(Msg::Tick(Timestamp::now()));
+        // The clock first: a key is taken at the time it came, not at the latest tick, which
+        // can be a second old.
+        let mut messages = vec![Msg::Tick(Timestamp::now())];
+        messages.extend(incoming.into_iter().filter_map(|incoming| match incoming {
+            Incoming::Msg(msg) => Some(*msg),
+            Incoming::Mouse(event) => place(event, &hotspots),
+        }));
         for msg in messages {
             for effect in model.update(msg) {
                 spawn(paths, &tx, &mut tasks, effect);

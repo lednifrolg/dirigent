@@ -114,6 +114,8 @@ pub struct Pending {
     reported: Attributes,
     /// A newer value came while this one was being sent.
     again: bool,
+    /// An earlier value went out, and the device may still report it.
+    went_out: bool,
 }
 
 /// What `u` takes back.
@@ -434,6 +436,7 @@ impl Model {
             before: Box::new(before.clone()),
             reported: Attributes::default(),
             again: false,
+            went_out: false,
         });
     }
 
@@ -502,6 +505,7 @@ impl Model {
                     && matches!(pending.stage, Stage::Queued { due: at } if at <= now)
                 {
                     pending.stage = Stage::Sending { batch };
+                    pending.went_out = true;
                     changes.push(pending.wanted);
                 }
             }
@@ -616,16 +620,19 @@ impl Model {
         let mut answers = false;
         let mut done = Vec::new();
         for (index, pending) in self.pending.iter_mut().enumerate() {
-            if pending.device != update.id || matches!(pending.stage, Stage::Queued { .. }) {
+            if pending.device != update.id {
                 continue;
             }
-            if update
+            let reports = update
                 .attributes
                 .iter()
-                .any(|(key, _)| reported_as(pending.kind).contains(&key))
-            {
-                answers = true;
+                .any(|(key, _)| reported_as(pending.kind).contains(&key));
+            if matches!(pending.stage, Stage::Queued { .. }) {
+                // The device may still report a value that went out before this one.
+                answers |= reports && pending.went_out;
+                continue;
             }
+            answers |= reports;
             pending.reported.apply(&update.attributes);
             let reported = pending.wanted.is_shown_by(&pending.reported);
             // A change being sent is confirmed once the hub took it.
@@ -692,6 +699,7 @@ impl Model {
                     return vec![];
                 }
                 let client = self.client.clone().expect("can_send needs a client");
+                self.scene_moves.insert(id.clone(), self.now);
                 vec![Effect::RunScene {
                     client,
                     scene: id,
@@ -826,6 +834,7 @@ impl Model {
                 }
             }
             Err(failure) => {
+                self.scene_moves.remove(scene);
                 self.log(
                     Tone::Bad,
                     &who,
@@ -856,6 +865,7 @@ impl Model {
         match step {
             Undo::Scene { id, name, until } => {
                 if self.now < until {
+                    self.scene_moves.insert(id.clone(), self.now);
                     return vec![Effect::RunScene {
                         client,
                         scene: id,
@@ -1199,6 +1209,27 @@ mod tests {
         );
         model.update(changed(STRIP, &json!({ "lightLevel": 50 })));
         assert!(model.pending.is_empty());
+    }
+
+    #[test]
+    fn an_earlier_value_reported_while_the_next_waits_is_not_from_elsewhere() {
+        let mut model = live();
+        model.update(key(KeyCode::Right));
+        let sent = sends(&model.update(at(130)));
+        assert_eq!(sent[0].1, [Change::Brightness(70)]);
+        model.update(Msg::Sent {
+            batch: sent[0].0,
+            result: Ok(()),
+        });
+        model.update(at(300));
+        model.update(key(KeyCode::Right));
+        let lines = model.activity.len();
+        // The light fades to 70 % while 80 % waits for the coalesce window.
+        model.update(changed(STRIP, &json!({ "lightLevel": 66 })));
+        assert_eq!(model.activity.len(), lines, "{:?}", model.activity);
+        assert!(!model.flashes.contains_key(&id(STRIP)));
+        let sent = sends(&model.update(at(430)));
+        assert_eq!(sent[0].1, [Change::Brightness(80)]);
     }
 
     #[test]

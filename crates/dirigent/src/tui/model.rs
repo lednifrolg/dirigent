@@ -25,8 +25,12 @@ pub use changes::{Motion, Pending, Picker, PickerRow, Undo, Wheel, presets};
 
 /// Activity lines kept; the pane shows the newest.
 const ACTIVITY_KEPT: usize = 100;
-/// A state change this soon after a remote's press is taken to come from that remote.
+/// A state change this soon after a press on a remote linked to the device is taken to come
+/// from that remote.
 const PRESS_LINK: SignedDuration = SignedDuration::from_millis(1500);
+/// What a scene's devices report this soon after it ran or was undone is taken to come from it,
+/// and so are the hub's own reports of that run.
+const SCENE_LINK: SignedDuration = SignedDuration::from_secs(5);
 /// The same line again within this time is not repeated: the hub reports some things twice.
 const REPEAT: SignedDuration = SignedDuration::from_secs(2);
 /// How long a notice stays in the hint bar.
@@ -356,6 +360,8 @@ pub struct Model {
     pub undo: Vec<Undo>,
     /// Scenes run from here, and until when they can be undone.
     pub scene_runs: HashMap<SceneId, Timestamp>,
+    /// When each scene last ran or was undone, from here or elsewhere, as far as this TUI knows.
+    scene_moves: HashMap<SceneId, Timestamp>,
     /// Devices blinking, until when.
     pub identifying: HashMap<DeviceId, Timestamp>,
     /// When a change from elsewhere showed on a device, for a flash of its row.
@@ -366,8 +372,8 @@ pub struct Model {
     pub motions: HashMap<DeviceId, Motion>,
     client: Option<Client>,
     backoff: Backoff,
-    /// The latest remote press, to name it as the source of what follows.
-    last_press: Option<(String, Timestamp)>,
+    /// The latest remote press and when it came, to name it as the source of what follows.
+    last_press: Option<(DeviceId, Timestamp)>,
     /// For batches and activity lines.
     next_id: u64,
 }
@@ -395,6 +401,7 @@ impl Model {
             pending: Vec::new(),
             undo: Vec::new(),
             scene_runs: HashMap::new(),
+            scene_moves: HashMap::new(),
             identifying: HashMap::new(),
             flashes: HashMap::new(),
             switched: HashMap::new(),
@@ -572,11 +579,7 @@ impl Model {
                     self.tab = tab;
                 }
             }
-            Action::Resync => {
-                if let Some(client) = self.client.clone() {
-                    return vec![Effect::Resync { client }];
-                }
-            }
+            Action::Resync => return self.resync(),
             Action::Help => self.overlay = Overlay::Help,
             Action::Activate => return self.activate(),
             Action::Brighter { fine } => return self.dim(if fine { 1 } else { 10 }),
@@ -719,12 +722,7 @@ impl Model {
                     .and_then(|d| d.attributes.light_level());
                 if !home.apply(update) {
                     // A device this TUI does not know yet: read everything again.
-                    return self
-                        .client
-                        .clone()
-                        .map(|client| Effect::Resync { client })
-                        .into_iter()
-                        .collect();
+                    return self.resync();
                 }
                 let Some(device) = home.device(&update.id) else {
                     return vec![];
@@ -745,21 +743,12 @@ impl Model {
                 let what = theme::describe_update(update);
                 if remote {
                     self.pressed.insert(update.id.clone(), at);
-                    self.last_press = Some((name.clone(), at));
+                    self.last_press = Some((update.id.clone(), self.now));
                 }
                 if what.is_empty() {
                     return vec![];
                 }
-                let source = if remote {
-                    None
-                } else {
-                    Some(
-                        self.last_press
-                            .as_ref()
-                            .filter(|(_, pressed)| at.duration_since(*pressed) <= PRESS_LINK)
-                            .map_or_else(|| "elsewhere".to_owned(), |(remote, _)| remote.clone()),
-                    )
-                };
+                let source = (!remote).then(|| self.cause(&update.id));
                 self.log_at(at, Tone::Info, &name, &what, source);
             }
             EventKind::RemotePress { device, pattern } => {
@@ -767,19 +756,116 @@ impl Model {
                     .device(device)
                     .map_or_else(|| device.to_string(), |d| d.name().to_owned());
                 self.pressed.insert(device.clone(), at);
-                self.last_press = Some((name.clone(), at));
+                self.last_press = Some((device.clone(), self.now));
                 self.log_at(at, Tone::Press, &name, pattern, None);
             }
-            EventKind::Scene(id) => {
-                let name = home
-                    .scene(id)
-                    .map_or_else(|| id.to_string(), |s| s.name().to_owned());
-                let what = event.event_type.trim_start_matches("scene").to_lowercase();
-                self.log_at(at, Tone::Info, &format!("scene {name}"), &what, None);
-            }
+            EventKind::Scene(id) => return self.scene_event(event, id),
             _ => {}
         }
         vec![]
+    }
+
+    /// What a change from elsewhere to `device` is put down to: a remote linked to it that was
+    /// just pressed, or a scene with it that just ran, whichever came last.
+    fn cause(&self, device: &DeviceId) -> String {
+        let Some(home) = &self.home else {
+            return "elsewhere".to_owned();
+        };
+        let links = home
+            .device(device)
+            .map(Device::remote_links)
+            .unwrap_or_default();
+        let press = self
+            .last_press
+            .as_ref()
+            .filter(|(remote, at)| {
+                links.contains(remote) && self.now.duration_since(*at) <= PRESS_LINK
+            })
+            .and_then(|(remote, at)| Some((home.device(remote)?.name(), *at)));
+        let scenes = home
+            .scenes
+            .iter()
+            .filter(|scene| {
+                scene
+                    .actions
+                    .iter()
+                    .any(|action| action.device_id.as_ref() == Some(device))
+            })
+            .filter_map(|scene| Some((scene.name(), *self.scene_moves.get(&scene.id)?)))
+            .filter(|(_, at)| self.now.duration_since(*at) <= SCENE_LINK);
+        press
+            .into_iter()
+            .chain(scenes)
+            .max_by_key(|(_, at)| *at)
+            .map_or_else(|| "elsewhere".to_owned(), |(name, _)| name.to_owned())
+    }
+
+    /// A scene was triggered, created, updated or deleted. The hub reports a run with two
+    /// `sceneUpdated` events, one with the time it started and one with the time it completed.
+    fn scene_event(&mut self, event: &Event, id: &SceneId) -> Vec<Effect> {
+        let Some(home) = self.home.as_mut() else {
+            return vec![];
+        };
+        let at = event.time.unwrap_or(self.now);
+        let data = &event.raw["data"];
+        // A run this TUI knows of already, from here or from an earlier report.
+        let known = self
+            .scene_moves
+            .get(id)
+            .is_some_and(|moved| self.now.duration_since(*moved) <= SCENE_LINK);
+        let what = match event.event_type.as_str() {
+            "sceneUpdated" => {
+                let Some(before) = home.apply_scene(data) else {
+                    return self.resync();
+                };
+                let Some(after) = home.scene(id) else {
+                    return vec![];
+                };
+                if after.last_triggered != before.last_triggered {
+                    "ran"
+                } else if rewritten(&before, after) {
+                    "updated"
+                } else {
+                    return vec![];
+                }
+            }
+            "sceneTriggered" => "ran",
+            kind @ ("sceneCreated" | "sceneDeleted") => {
+                let name = home.scene(id).map_or_else(
+                    || {
+                        data["info"]["name"]
+                            .as_str()
+                            .unwrap_or(id.as_str())
+                            .to_owned()
+                    },
+                    |scene| scene.name().to_owned(),
+                );
+                let what = kind.trim_start_matches("scene").to_lowercase();
+                self.log_at(at, Tone::Info, &format!("scene {name}"), &what, None);
+                return self.resync();
+            }
+            _ => return vec![],
+        };
+        if known {
+            return vec![];
+        }
+        let name = home
+            .scene(id)
+            .map_or_else(|| id.to_string(), |scene| scene.name().to_owned());
+        if what == "ran" {
+            self.scene_moves.insert(id.clone(), self.now);
+        }
+        let source = (what == "ran").then(|| "elsewhere".to_owned());
+        self.log_at(at, Tone::Info, &format!("scene {name}"), what, source);
+        vec![]
+    }
+
+    fn resync(&self) -> Vec<Effect> {
+        self.client
+            .clone()
+            .map(|client| Effect::Resync { client })
+            .into_iter()
+            .collect()
     }
 
     fn log(&mut self, tone: Tone, who: &str, what: &str, source: Option<String>) -> u64 {
@@ -853,6 +939,18 @@ impl Model {
     pub fn device(&self, id: &DeviceId) -> Option<&Device> {
         self.home.as_ref()?.device(id)
     }
+}
+
+/// Whether a scene changed beyond the times of its latest run.
+fn rewritten(before: &Scene, after: &Scene) -> bool {
+    let lasting = |scene: &Scene| {
+        let mut value = serde_json::to_value(scene).unwrap_or_default();
+        if let Some(fields) = value.as_object_mut() {
+            fields.retain(|key, _| !key.starts_with("last"));
+        }
+        value
+    };
+    lasting(before) != lasting(after)
 }
 
 #[cfg(test)]
@@ -1014,20 +1112,127 @@ pub mod tests {
         assert_eq!(model.activity[0].source.as_deref(), Some("Bedside switch"));
         assert_eq!(model.activity[1].tone, Tone::Press);
         assert!(model.pressed.contains_key(&DeviceId(REMOTE.into())));
+        model.update(event(&json!({
+            "type": "deviceStateChanged",
+            "data": { "id": STRIP, "attributes": { "isOn": false } },
+        })));
+        assert_eq!(
+            model.activity[0].source.as_deref(),
+            Some("elsewhere"),
+            "the remote is not linked to the strip"
+        );
     }
 
     #[test]
     fn repeated_reports_show_once() {
         let mut model = live();
-        let updated = json!({
+        let changed = json!({
+            "type": "deviceStateChanged",
+            "time": "2026-01-01T12:00:05.000Z",
+            "data": { "id": LAMP, "attributes": { "isOn": true } },
+        });
+        model.update(event(&changed));
+        model.update(event(&changed));
+        assert_eq!(model.activity.len(), 2, "{:?}", model.activity);
+        assert_eq!(model.activity[0].who, "Reading lamp");
+    }
+
+    const EVENING: &str = "a1b2c3d4-0000-4000-8000-0000000000b1";
+
+    /// A `sceneUpdated` event as the hub sends it for a run.
+    fn scene_updated(fields: &serde_json::Value) -> Msg {
+        let mut data = json!({ "id": EVENING });
+        data.as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        event(&json!({
             "type": "sceneUpdated",
             "time": "2026-01-01T12:00:05.000Z",
-            "data": { "id": "a1b2c3d4-0000-4000-8000-0000000000b1" },
-        });
-        model.update(event(&updated));
-        model.update(event(&updated));
-        assert_eq!(model.activity.len(), 2, "{:?}", model.activity);
+            "data": data,
+        }))
+    }
+
+    #[test]
+    fn a_scene_run_elsewhere_shows_once_and_what_it_does_is_put_down_to_it() {
+        let mut model = live();
+        let lines = model.activity.len();
+        let started = json!({ "lastTriggered": "2026-01-01T12:00:05.000Z" });
+        model.update(scene_updated(&started));
+        model.update(scene_updated(
+            &json!({ "lastCompleted": "2026-01-01T12:00:05.300Z" }),
+        ));
+        model.update(scene_updated(&started));
+        assert_eq!(model.activity.len(), lines + 1, "{:?}", model.activity);
         assert_eq!(model.activity[0].who, "scene Evening");
+        assert_eq!(model.activity[0].what, "ran");
+        assert_eq!(model.activity[0].source.as_deref(), Some("elsewhere"));
+        let evening = model.home.as_ref().unwrap().scenes[0].clone();
+        assert_eq!(
+            evening.triggered_at(),
+            Some("2026-01-01T12:00:05Z".parse().unwrap()),
+            "the scene says when it last ran"
+        );
+        model.update(event(&json!({
+            "type": "deviceStateChanged",
+            "data": { "id": LAMP, "attributes": { "isOn": true } },
+        })));
+        assert_eq!(model.activity[0].source.as_deref(), Some("Evening"));
+        // Long after the run, a change is from elsewhere again.
+        model.update(Msg::Tick(now() + SignedDuration::from_secs(10)));
+        model.update(event(&json!({
+            "type": "deviceStateChanged",
+            "data": { "id": LAMP, "attributes": { "isOn": false } },
+        })));
+        assert_eq!(model.activity[0].source.as_deref(), Some("elsewhere"));
+    }
+
+    #[test]
+    fn the_hubs_reports_of_a_run_from_here_add_no_lines() {
+        let mut model = live();
+        // A press on the lamp's remote just before does not take the scene's place.
+        model.update(event(&json!({
+            "type": "remotePressEvent",
+            "data": { "id": REMOTE, "clickPattern": "singlePress" },
+        })));
+        model.update(Msg::Tick(now() + SignedDuration::from_millis(500)));
+        model.update(Msg::Select(Row::Scene(SceneId(EVENING.into()))));
+        model.update(Msg::Key(KeyCode::Enter.into()));
+        model.update(Msg::SceneDone {
+            scene: SceneId(EVENING.into()),
+            undo: false,
+            result: Ok(()),
+        });
+        let lines = model.activity.len();
+        model.update(scene_updated(
+            &json!({ "lastTriggered": "2026-01-01T12:00:05.000Z" }),
+        ));
+        model.update(scene_updated(
+            &json!({ "lastCompleted": "2026-01-01T12:00:05.300Z" }),
+        ));
+        assert_eq!(model.activity.len(), lines, "{:?}", model.activity);
+        model.update(event(&json!({
+            "type": "deviceStateChanged",
+            "data": { "id": LAMP, "attributes": { "isOn": true } },
+        })));
+        assert_eq!(model.activity[0].who, "Reading lamp");
+        assert_eq!(model.activity[0].source.as_deref(), Some("Evening"));
+    }
+
+    #[test]
+    fn scenes_changed_in_the_app_show_and_new_ones_are_read() {
+        let mut model = live();
+        model.update(scene_updated(
+            &json!({ "info": { "name": "Late evening" } }),
+        ));
+        assert_eq!(model.activity[0].who, "scene Late evening");
+        assert_eq!(model.activity[0].what, "updated");
+        let effects = model.update(event(&json!({
+            "type": "sceneCreated",
+            "data": { "id": "a1b2c3d4-0000-4000-8000-0000000000b9", "info": { "name": "Night" } },
+        })));
+        assert_eq!(model.activity[0].who, "scene Night");
+        assert_eq!(model.activity[0].what, "created");
+        assert!(matches!(effects.as_slice(), [Effect::Resync { .. }]));
     }
 
     #[test]

@@ -107,6 +107,27 @@ impl Home {
         }
         matched
     }
+
+    /// Applies a `sceneUpdated` event's data: the scene as it is now, or the fields that changed.
+    /// Returns the scene as it was before; `None` if no scene matched, and the home should be
+    /// read again.
+    pub fn apply_scene(&mut self, data: &Value) -> Option<Scene> {
+        let id = data["id"].as_str()?;
+        let scene = self
+            .scenes
+            .iter_mut()
+            .find(|scene| scene.id.as_str() == id)?;
+        let before = scene.clone();
+        if let (Ok(Value::Object(mut merged)), Value::Object(fields)) =
+            (serde_json::to_value(&*scene), data)
+        {
+            merged.extend(fields.clone());
+            if let Ok(updated) = serde_json::from_value(Value::Object(merged)) {
+                *scene = updated;
+            }
+        }
+        Some(before)
+    }
 }
 
 /// What a device is, from its `deviceType`.

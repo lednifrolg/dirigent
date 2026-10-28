@@ -61,6 +61,29 @@ async fn pairing_waits_for_the_button_and_keeps_the_token_private() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn completions_and_man_pages_need_no_hub() {
+    let dirigent = Dirigent::new().await;
+    for shell in ["bash", "zsh", "fish"] {
+        let output = dirigent.run(&["completions", shell]).await;
+        assert_eq!(code(&output), 0, "{shell}: {}", stderr(&output));
+        assert!(stdout(&output).contains("dirigent"), "{shell}");
+    }
+    let pages = dirigent.file("man");
+    let output = dirigent.run(&["man", pages.to_str().unwrap()]).await;
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    for page in [
+        "dirigent.1",
+        "dirigent-pair.1",
+        "dirigent-dim.1",
+        "dirigent-color.1",
+        "dirigent-watch.1",
+    ] {
+        assert!(pages.join(page).exists(), "{page}");
+    }
+    assert!(!dirigent.file("state").exists(), "nothing else was written");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_tui_needs_a_terminal() {
     let dirigent = Dirigent::paired().await;
     let output = dirigent.run(&[]).await;
@@ -285,7 +308,8 @@ async fn status_shows_a_light() {
         "power       on",
         "brightness  60 %",
         "white       -  (2202-4000 K)",
-        "color       ■ 30° 80 %",
+        // Without colors there is no swatch.
+        "color       30° 80 %",
     ] {
         assert!(text.contains(expected), "missing {expected:?} in\n{text}");
     }
@@ -301,8 +325,11 @@ async fn scenes_run_and_undo() {
         "{}",
         stdout(&run)
     );
+    let lamp_is_on = || dirigent.hub.device(LAMP)["attributes"]["isOn"].clone();
+    assert_eq!(lamp_is_on(), true, "the scene switches the lamp on");
     let undo = dirigent.run(&["scene", "evening", "--undo"]).await;
     assert_eq!(code(&undo), 0, "{}", stderr(&undo));
+    assert_eq!(lamp_is_on(), false, "the undo puts it back");
     let scene = "a1b2c3d4-0000-4000-8000-0000000000b1";
     assert_eq!(
         dirigent.hub.changes(),

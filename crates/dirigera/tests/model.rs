@@ -141,3 +141,33 @@ fn state_changes_update_the_home() {
         serde_json::from_value(json!({ "id": "not-in-this-home_1" })).unwrap();
     assert!(!home.apply(&unknown));
 }
+
+#[test]
+fn scene_updates_update_the_home() {
+    let mut home = home();
+    let id = "a1b2c3d4-0000-4000-8000-0000000000b1";
+    let before = home
+        .apply_scene(&json!({ "id": id, "lastTriggered": "2026-01-01T12:00:00.000Z" }))
+        .unwrap();
+    assert_eq!(
+        before.triggered_at(),
+        Some("2025-12-31T18:00:00.250Z".parse().unwrap())
+    );
+    let scene = &home.scenes[0];
+    assert_eq!(
+        scene.triggered_at(),
+        Some("2026-01-01T12:00:00Z".parse().unwrap())
+    );
+    assert_eq!(scene.name(), "Evening", "what the event leaves out stays");
+    assert_eq!(scene.extra["createdAt"], "2024-02-01T17:00:00.000Z");
+
+    let mut renamed = serde_json::to_value(scene).unwrap();
+    renamed["info"]["name"] = json!("Late evening");
+    home.apply_scene(&renamed).unwrap();
+    assert_eq!(home.scenes[0].name(), "Late evening");
+
+    assert!(
+        home.apply_scene(&json!({ "id": "not-in-this-home" }))
+            .is_none()
+    );
+}
