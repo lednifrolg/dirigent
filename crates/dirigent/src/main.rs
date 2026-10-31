@@ -274,8 +274,9 @@ async fn run(cli: Cli) -> Result<(), AppError> {
                 .and_then(|()| man_pages(Cli::command(), dir))
                 .map_err(|e| AppError::io(dir, e))?;
             output::success(format_args!(
-                "man pages written to {0}; read one with `man -l {0}/dirigent.1`",
-                dir.display()
+                "man pages written to {}; read one with `man -l {}`",
+                dir.display(),
+                dir.join("dirigent.1").display()
             ));
             return Ok(());
         }

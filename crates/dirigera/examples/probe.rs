@@ -13,7 +13,6 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
-use std::os::unix::fs::OpenOptionsExt;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -127,11 +126,11 @@ async fn pair(address: SocketAddr, name: &str, out: &str) -> Result {
         tokio::time::sleep(Duration::from_secs(1)).await;
     };
     println!("paired after {asked} requests in {:?}", started.elapsed());
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(out)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(out)?;
     writeln!(
         file,
         "DIRIGERA_IP={address}\nDIRIGERA_TOKEN={}\nDIRIGERA_PIN={pin}",
