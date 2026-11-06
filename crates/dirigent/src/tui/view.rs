@@ -14,6 +14,13 @@ use super::model::{
 };
 use crate::theme::{self, LOW_BATTERY, Rgb};
 
+/// The version in the status line. Tests pin it, so a release changes no snapshot.
+const VERSION: &str = if cfg!(test) {
+    "0.0.0"
+} else {
+    env!("CARGO_PKG_VERSION")
+};
+
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 /// Borders of panes without focus, and status line segments.
@@ -1339,7 +1346,7 @@ fn hint_bar(model: &Model, frame: &mut Frame, area: Rect, shape: Shape) {
             };
             Span::styled(format!("{} ", notice.text), Style::new().fg(color))
         }
-        _ => Span::styled(concat!("dirigent ", env!("CARGO_PKG_VERSION"), " "), DIM),
+        _ => Span::styled(format!("dirigent {VERSION} "), DIM),
     };
     let line = |hints: &[(u8, &str, &str)]| {
         let mut left = vec![Span::raw(" ")];
