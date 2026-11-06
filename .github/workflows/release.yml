@@ -1,0 +1,206 @@
+name: Release
+
+# A tag v* on main builds the archives and publishes them as a GitHub release. A pull request
+# that changes what goes into them builds them without publishing, so a release does not fail
+# first on its tag. No caches: what is published is built from the tagged
+# source alone.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "README.md"
+      - "LICENSE-*"
+
+permissions:
+  contents: read
+
+# One run per tag at a time; a pull request's newer push replaces its older run.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # The same compiler for every archive of a release; raised on purpose.
+  RUST_TOOLCHAIN: "1.99.1"
+  # The oldest macOS the binaries run on; older ones lack APIs the TLS stack calls.
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+  # The C runtime goes into the Windows binaries, so they run without the Visual C++
+  # Redistributable installed.
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+  CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            archive: tar.gz
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            runner: macos-26
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-26-intel
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+            archive: zip
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            archive: zip
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+      - name: Install the musl C toolchain
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - name: Read the version
+        id: version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 --locked \
+            | jq -r '.packages[] | select(.name == "dirigent") | .version')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match dirigent $VERSION"
+            exit 1
+          fi
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --locked --package dirigent --target "$TARGET"
+      - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          # The archive name has no version, so the latest release has a stable download URL.
+          name="dirigent-$TARGET"
+          mkdir -p "dist/$name/completions"
+          cp README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+          if [[ "$TARGET" == *-windows-* ]]; then
+            # A zip, with the completions for PowerShell and no man pages.
+            binary="target/$TARGET/release/dirigent.exe"
+            cp "$binary" "dist/$name/"
+            "$binary" --version
+            "$binary" completions powershell > "dist/$name/completions/_dirigent.ps1"
+            # Windows' own tar writes zips; the GNU tar that Git puts first on the PATH cannot.
+            (cd dist && /c/Windows/System32/tar.exe -a -cf "$name.zip" "$name")
+          else
+            binary="target/$TARGET/release/dirigent"
+            cp "$binary" "dist/$name/"
+            "$binary" --version
+            "$binary" completions bash > "dist/$name/completions/dirigent.bash"
+            "$binary" completions zsh > "dist/$name/completions/_dirigent"
+            "$binary" completions fish > "dist/$name/completions/dirigent.fish"
+            "$binary" man "dist/$name/man/man1"
+            # Owned by root, so unpacking as root does not hand the files to a runner's uid.
+            if tar --version | grep -q GNU; then
+              owner=(--owner=0 --group=0 --numeric-owner --sort=name)
+            else
+              owner=(--uid 0 --gid 0)
+            fi
+            tar "${owner[@]}" -C dist -czf "dist/$name.tar.gz" "$name"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.target }}
+          # Exactly the archive for this target: nothing else a build leaves in dist/ is
+          # published.
+          path: dist/dirigent-${{ matrix.target }}.${{ matrix.archive }}
+          if-no-files-found: error
+          # Archives built for a pull request are for checking, not for passing around.
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 30 }}
+
+  publish:
+    name: publish
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # The checkout itself fails when the tag was moved during the build.
+      - name: Check the tag is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not on main"
+            exit 1
+          fi
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum dirigent-*.tar.gz dirigent-*.zip > SHA256SUMS
+      # The binaries are attested too, so an installed dirigent can be checked on its own. Only
+      # the bytes of each binary are read out: entries of an archive never become files, links or
+      # directories in this job, which can write.
+      - name: Read the binaries out
+        working-directory: dist
+        run: |
+          for archive in dirigent-*.tar.gz; do
+            name=${archive%.tar.gz}
+            mkdir -p "binaries/$name"
+            tar -xzOf "$archive" "$name/dirigent" > "binaries/$name/dirigent"
+          done
+          for archive in dirigent-*.zip; do
+            name=${archive%.zip}
+            mkdir -p "binaries/$name"
+            unzip -p "$archive" "$name/dirigent.exe" > "binaries/$name/dirigent.exe"
+          done
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/dirigent-*.tar.gz
+            dist/dirigent-*.zip
+            dist/SHA256SUMS
+            dist/binaries/dirigent-*/dirigent
+            dist/binaries/dirigent-*/dirigent.exe
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=(dist/dirigent-*.tar.gz dist/dirigent-*.zip dist/SHA256SUMS)
+          # A version like 0.2.0-rc.1 is a pre-release and never becomes the latest.
+          flags=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            flags=(--prerelease --latest=false)
+          fi
+          # Fails when the tag already has a release: published files are never replaced.
+          gh release create "$GITHUB_REF_NAME" "${files[@]}" "${flags[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "dirigent $GITHUB_REF_NAME" \
+            --verify-tag \
+            --generate-notes
