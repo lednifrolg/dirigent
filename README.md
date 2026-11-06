@@ -11,15 +11,38 @@ switches real devices in a real home.
 
 ## Install
 
-From source, with a recent Rust:
+Download the archive for your system from the
+[latest release](https://github.com/lednifrolg/dirigent/releases/latest) and put `dirigent` on
+your PATH:
 
 ```sh
-cargo install --git https://github.com/lednifrolg/dirigent --locked dirigent
+# Linux: x86_64-unknown-linux-musl or aarch64-unknown-linux-musl
+# macOS: aarch64-apple-darwin (Apple silicon) or x86_64-apple-darwin (Intel)
+target=x86_64-unknown-linux-musl
+latest=https://github.com/lednifrolg/dirigent/releases/latest/download
+curl -fsSLO "$latest/dirigent-$target.tar.gz"
+tar -xzf "dirigent-$target.tar.gz"
+mkdir -p ~/.local/bin && install -m 755 "dirigent-$target/dirigent" ~/.local/bin/
 ```
 
-or from a clone, `cargo install --path crates/dirigent --locked`. On Windows, the build needs the
-Visual Studio C++ build tools besides Rust; rustup offers to install them. Shell completions and
-man pages come from the binary:
+On Windows, in PowerShell:
+
+```powershell
+# x86_64-pc-windows-msvc, or aarch64-pc-windows-msvc on ARM
+$target = "x86_64-pc-windows-msvc"
+$latest = "https://github.com/lednifrolg/dirigent/releases/latest/download"
+curl.exe -fsSLO "$latest/dirigent-$target.zip"
+tar.exe -xf "dirigent-$target.zip"
+$bin = "$env:LOCALAPPDATA\Programs\dirigent"
+New-Item -ItemType Directory -Force $bin | Out-Null
+Copy-Item "dirigent-$target\dirigent.exe" $bin
+# Once: add it to your PATH, then open a new terminal
+$path = [Environment]::GetEnvironmentVariable("Path", "User")
+[Environment]::SetEnvironmentVariable("Path", "$path;$bin", "User")
+```
+
+The archives also hold shell completions and, except on Windows, man pages; dirigent writes the
+same files itself:
 
 ```sh
 dirigent completions bash > ~/.local/share/bash-completion/completions/dirigent
@@ -29,7 +52,22 @@ dirigent man ~/.local/share/man/man1
 ```
 
 In PowerShell, add `dirigent completions powershell | Out-String | Invoke-Expression` to your
-`$PROFILE`.
+`$PROFILE`. With the GitHub CLI, this checks that the archive was built by this repository's
+release workflow (on Windows, for the `.zip` and on one line):
+
+```sh
+gh attestation verify "dirigent-$target.tar.gz" --repo lednifrolg/dirigent \
+  --signer-workflow lednifrolg/dirigent/.github/workflows/release.yml
+```
+
+From source, with a recent Rust:
+
+```sh
+cargo install --git https://github.com/lednifrolg/dirigent --locked dirigent
+```
+
+or from a clone, `cargo install --path crates/dirigent --locked`. On Windows, the build needs the
+Visual Studio C++ build tools besides Rust; rustup offers to install them.
 
 ## Usage
 
