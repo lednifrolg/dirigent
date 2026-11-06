@@ -1,8 +1,8 @@
 # dirigent
 
 `dirigent` is a terminal client for the IKEA DIRIGERA smart home hub over its local API: an
-interactive TUI and one-shot commands for the shell, on Linux and macOS. Verified live on hub
-firmware 2.975.3.
+interactive TUI and one-shot commands for the shell, on Linux, macOS and Windows. Verified live
+on hub firmware 2.975.3.
 
 Unofficial project, not affiliated with IKEA. It talks to the hub's undocumented local API and
 switches real devices in a real home.
@@ -17,8 +17,9 @@ From source, with a recent Rust:
 cargo install --git https://github.com/lednifrolg/dirigent --locked dirigent
 ```
 
-or from a clone, `cargo install --path crates/dirigent --locked`. Shell completions and man
-pages come from the binary:
+or from a clone, `cargo install --path crates/dirigent --locked`. On Windows, the build needs the
+Visual Studio C++ build tools besides Rust; rustup offers to install them. Shell completions and
+man pages come from the binary:
 
 ```sh
 dirigent completions bash > ~/.local/share/bash-completion/completions/dirigent
@@ -26,6 +27,9 @@ dirigent completions zsh > ~/.zfunc/_dirigent      # a directory on your $fpath
 dirigent completions fish > ~/.config/fish/completions/dirigent.fish
 dirigent man ~/.local/share/man/man1
 ```
+
+In PowerShell, add `dirigent completions powershell | Out-String | Invoke-Expression` to your
+`$PROFILE`.
 
 ## Usage
 
@@ -72,21 +76,22 @@ wheel. In a narrow window, `Tab` switches between the devices and the activity.
 ## Pairing
 
 `dirigent pair` finds the hub on the network and asks you to press the action button on the
-bottom of the hub. The token the hub issues is kept in `~/.local/state/dirigent/hub.json`,
-readable only by you, together with the fingerprint of the hub's certificate: later connections
-accept only that certificate. When the hub's address changes, dirigent finds it again by its
-identity. Nothing leaves your home network. `dirigent unpair` removes dirigent from the hub's
-users again.
+bottom of the hub. The token the hub issues is kept in `~/.local/state/dirigent/hub.json`
+(`%LOCALAPPDATA%\dirigent\state\hub.json` on Windows), readable only by you, together with the
+fingerprint of the hub's certificate: later connections accept only that certificate. When the
+hub's address changes, dirigent finds it again by its identity. Nothing leaves your home network.
+`dirigent unpair` removes dirigent from the hub's users again.
 
 ## Configuration
 
-`~/.config/dirigent/config.toml` is optional:
+`~/.config/dirigent/config.toml` (`%APPDATA%\dirigent\config.toml` on Windows) is optional:
 
 ```toml
 animations = false   # no flashing rows, blinking dots or bars in motion in the TUI
 ```
 
-`DIRIGENT_HOME` puts config and state in one directory.
+`DIRIGENT_HOME` puts config and state in one directory. On Windows, the access rules of your user
+profile keep these files private; a `DIRIGENT_HOME` outside it gets the rules of its directory.
 
 ## Exit codes
 

@@ -1,7 +1,6 @@
 //! End to end: the real `dirigent` binary against a fake hub.
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -42,10 +41,15 @@ async fn pairing_waits_for_the_button_and_keeps_the_token_private() {
         "one refused before the press, one after"
     );
     let file = dirigent.file("state/hub.json");
-    assert_eq!(
-        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
     let stored: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
     assert_eq!(stored["token"], TOKEN);
     assert_eq!(stored["name"], "Test hub");
@@ -60,10 +64,54 @@ async fn pairing_waits_for_the_button_and_keeps_the_token_private() {
     );
 }
 
+/// Pairs without `DIRIGENT_HOME`, so dirigent keeps the token in the locations of the system,
+/// which `configure` points into the test's directory.
+async fn pair_without_dirigent_home(
+    dirigent: &Dirigent,
+    configure: impl FnOnce(&mut tokio::process::Command) -> &mut tokio::process::Command,
+) {
+    let mut command = dirigent.command(&["pair", "--name", "dirigent@test"]);
+    configure(command.env_remove("DIRIGENT_HOME"));
+    let output = command.output().await.unwrap();
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn the_token_is_kept_in_the_xdg_state_directory() {
+    let dirigent = Dirigent::new().await;
+    let home = dirigent.home.path();
+
+    pair_without_dirigent_home(&dirigent, |command| {
+        command
+            .env("HOME", home.join("home"))
+            .env("XDG_STATE_HOME", home.join("xdg-state"))
+    })
+    .await;
+
+    assert!(home.join("xdg-state/dirigent/hub.json").exists());
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn the_token_is_kept_in_local_app_data() {
+    let dirigent = Dirigent::new().await;
+    let home = dirigent.home.path();
+
+    pair_without_dirigent_home(&dirigent, |command| {
+        command
+            .env("APPDATA", home.join("roaming"))
+            .env("LOCALAPPDATA", home.join("local"))
+    })
+    .await;
+
+    assert!(home.join(r"local\dirigent\state\hub.json").exists());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn completions_and_man_pages_need_no_hub() {
     let dirigent = Dirigent::new().await;
-    for shell in ["bash", "zsh", "fish"] {
+    for shell in ["bash", "zsh", "fish", "powershell"] {
         let output = dirigent.run(&["completions", shell]).await;
         assert_eq!(code(&output), 0, "{shell}: {}", stderr(&output));
         assert!(stdout(&output).contains("dirigent"), "{shell}");
